@@ -33,7 +33,6 @@ export default function Room() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   const playerRef = useRef<any>(null);
-  const currentVideoIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const initializationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -142,7 +141,6 @@ export default function Room() {
             },
             events: {
               onReady: () => {
-                currentVideoIdRef.current = roomStatus.videoId;
                 setIsPlayerReady(true);
                 if (initializationTimeoutRef.current) clearTimeout(initializationTimeoutRef.current);
               },
@@ -162,11 +160,7 @@ export default function Room() {
                 }
               },
               onError: (e: any) => {
-                console.error(`YouTube Player Error: ${e.data}`);
-                if (isHost) {
-                  setShowNextPrompt(true);
-                  setIsUserActive(true);
-                }
+                setLoadError(`YouTube Player Error: ${e.data}`);
               }
             },
           });
@@ -209,7 +203,7 @@ export default function Room() {
               currentTimestamp: currentTime,
               isPaused: isPaused,
               sessionId: sessionId,
-              videoId: playerRef.current?.getVideoData?.()?.video_id || roomStatus?.videoId,
+              videoId: roomStatus?.videoId,
             }),
           });
         } catch (e) {}
@@ -220,23 +214,17 @@ export default function Room() {
             const status: RoomStatus = await response.json();
             setRoomStatus(status);
 
-            if (currentVideoIdRef.current !== status.videoId) {
-                 playerRef.current.loadVideoById(status.videoId);
-                 currentVideoIdRef.current = status.videoId;
-                 setShowNextPrompt(false);
-            }
-
             const localTime = playerRef.current.getCurrentTime();
             const timeDiff = Math.abs(localTime - status.currentTimestamp);
 
             const playerState = playerRef.current.getPlayerState();
             if (status.isPaused && playerState === 1) {
               playerRef.current.pauseVideo();
-            } else if (!status.isPaused && (playerState === 2 || playerState === -1 || playerState === 0 || playerState === 5)) {
+            } else if (!status.isPaused && (playerState === 2 || playerState === -1)) {
               playerRef.current.playVideo();
             }
 
-            if (timeDiff > 2.0 && !status.isPaused && playerState !== 3) {
+            if (timeDiff > 2.0) {
               playerRef.current.seekTo(status.currentTimestamp, true);
             }
           }
@@ -291,15 +279,8 @@ export default function Room() {
       });
       
       if (response.ok) {
-        const data = await response.json();
         setNextVideoUrl("");
         setShowNextPrompt(false);
-        if (data.videoId) {
-          setRoomStatus(prev => prev ? { ...prev, videoId: data.videoId, isPaused: 1, currentTimestamp: 0 } : null);
-          if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
-            playerRef.current.loadVideoById(data.videoId);
-          }
-        }
       } else {
         alert("Failed to change video");
       }
