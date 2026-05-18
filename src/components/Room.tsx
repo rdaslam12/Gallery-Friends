@@ -33,10 +33,39 @@ export default function Room() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   const playerRef = useRef<any>(null);
+  const html5VideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const initializationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const isDrive = roomStatus?.videoId?.startsWith("drive:");
+  const actualVideoId = roomStatus?.videoId?.replace(/^(yt:|drive:)/, "") || roomStatus?.videoId;
+
+  const getUnifiedPlayer = () => ({
+    getCurrentTime: () => {
+      if (isDrive && html5VideoRef.current) return html5VideoRef.current.currentTime;
+      if (!isDrive && playerRef.current?.getCurrentTime) return playerRef.current.getCurrentTime();
+      return 0;
+    },
+    getPlayerState: () => {
+      if (isDrive && html5VideoRef.current) return html5VideoRef.current.paused ? 2 : 1;
+      if (!isDrive && playerRef.current?.getPlayerState) return playerRef.current.getPlayerState();
+      return -1;
+    },
+    pauseVideo: () => {
+      if (isDrive && html5VideoRef.current) html5VideoRef.current.pause();
+      if (!isDrive && playerRef.current?.pauseVideo) playerRef.current.pauseVideo();
+    },
+    playVideo: () => {
+      if (isDrive && html5VideoRef.current) html5VideoRef.current.play().catch(e => console.error("Play error", e));
+      if (!isDrive && playerRef.current?.playVideo) playerRef.current.playVideo();
+    },
+    seekTo: (time: number, allowSeekAhead: boolean) => {
+      if (isDrive && html5VideoRef.current) html5VideoRef.current.currentTime = time;
+      if (!isDrive && playerRef.current?.seekTo) playerRef.current.seekTo(time, allowSeekAhead);
+    }
+  });
 
   // Initialize display name if missing
   useEffect(() => {
@@ -126,11 +155,18 @@ export default function Room() {
 
   // Initialize player
   useEffect(() => {
-    if (ytApiReady && roomStatus) {
+    if (!roomStatus) return;
+
+    if (isDrive) {
+      setIsPlayerReady(true);
+      return;
+    }
+
+    if (ytApiReady) {
       if (!playerRef.current) {
         try {
           playerRef.current = new window.YT.Player("youtube-player", {
-            videoId: roomStatus.videoId,
+            videoId: actualVideoId,
             playerVars: {
               autoplay: 1,
               controls: 1,
@@ -174,8 +210,8 @@ export default function Room() {
         }
       } else if (playerRef.current && typeof playerRef.current.getVideoData === "function") {
          const currentVideoData = playerRef.current.getVideoData();
-         if (currentVideoData && currentVideoData.video_id !== roomStatus.videoId) {
-           playerRef.current.loadVideoById(roomStatus.videoId);
+         if (currentVideoData && currentVideoData.video_id !== actualVideoId) {
+           playerRef.current.loadVideoById(actualVideoId);
            setShowNextPrompt(false);
          }
       }
@@ -183,16 +219,18 @@ export default function Room() {
     return () => {
       if (initializationTimeoutRef.current) clearTimeout(initializationTimeoutRef.current);
     };
-  }, [ytApiReady, roomStatus]);
+  }, [ytApiReady, roomStatus, isDrive, actualVideoId]);
 
   // Main Polling Loop
   useEffect(() => {
     if (!isPlayerReady || !roomId) return;
 
     pollingIntervalRef.current = setInterval(async () => {
+      const unifiedPlayer = getUnifiedPlayer();
+    
       if (isHost) {
-        const currentTime = playerRef.current.getCurrentTime();
-        const playerState = playerRef.current.getPlayerState();
+        const currentTime = unifiedPlayer.getCurrentTime();
+        const playerState = unifiedPlayer.getPlayerState();
         const isPaused = playerState === 2 || playerState === -1;
 
         try {
@@ -214,18 +252,18 @@ export default function Room() {
             const status: RoomStatus = await response.json();
             setRoomStatus(status);
 
-            const localTime = playerRef.current.getCurrentTime();
+            const localTime = unifiedPlayer.getCurrentTime();
             const timeDiff = Math.abs(localTime - status.currentTimestamp);
 
-            const playerState = playerRef.current.getPlayerState();
+            const playerState = unifiedPlayer.getPlayerState();
             if (status.isPaused && playerState === 1) {
-              playerRef.current.pauseVideo();
+              unifiedPlayer.pauseVideo();
             } else if (!status.isPaused && (playerState === 2 || playerState === -1)) {
-              playerRef.current.playVideo();
+              unifiedPlayer.playVideo();
             }
 
             if (timeDiff > 2.0) {
-              playerRef.current.seekTo(status.currentTimestamp, true);
+              unifiedPlayer.seekTo(status.currentTimestamp, true);
             }
           }
         } catch (e) {}
@@ -243,7 +281,7 @@ export default function Room() {
     return () => {
       if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     };
-  }, [isPlayerReady, isHost, roomId, sessionId]);
+  }, [isPlayerReady, isHost, roomId, sessionId, isDrive]);
 
   // Autoscroll chat
   useEffect(() => {
@@ -293,9 +331,29 @@ export default function Room() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans">
-      {/* YouTube Player Background */}
-      <div className="absolute inset-0 z-0">
-        <div id="youtube-player" className="w-full h-full pointer-events-auto" />
+      {/* Video Player Background */}
+      <div className="absolute inset-0 z-0 bg-black flex items-center justify-center">
+        {isDrive ? (
+          <video
+            ref={html5VideoRef}
+            src={`https://drive.google.com/uc?export=download&id=${actualVideoId}`}
+            className="w-full h-full object-contain pointer-events-auto"
+            controls
+            autoPlay
+            onPlay={() => {
+              setIsPlaying(true);
+              if (isHost) setShowNextPrompt(false);
+            }}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => {
+              setShowNextPrompt(true);
+              if (isHost) setIsUserActive(true);
+            }}
+            onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
+          />
+        ) : (
+          <div id="youtube-player" className="w-full h-full pointer-events-auto" />
+        )}
       </div>
 
       {/* Cinematic Overlays */}

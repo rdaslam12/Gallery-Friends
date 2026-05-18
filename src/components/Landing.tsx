@@ -177,7 +177,7 @@ export default function Landing() {
                 <button type="button" onClick={() => setView("actions")} className="flex items-center gap-2 text-[#9d4edd] text-[10px] font-bold uppercase tracking-widest hover:text-[#b366ff] transition-colors mb-4"><ArrowLeft className="w-3 h-3" /> Back</button>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] ml-1">Source Material</label>
-                  <input type="text" placeholder="YOUTUBE URL" className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white" value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} />
+                  <input type="text" placeholder="YOUTUBE OR GOOGLE DRIVE URL" className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white" value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} />
                 </div>
                 <button type="submit" disabled={isLoading || !youtubeUrl} className="w-full flex items-center justify-center gap-2 py-4 bg-[#9d4edd] hover:bg-[#8a3ec9] disabled:opacity-50 text-white font-bold text-xs uppercase tracking-[0.3em] rounded-xl transition-all shadow-glow">
                   {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <span>Start Broadcast</span>}
