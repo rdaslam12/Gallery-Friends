@@ -33,6 +33,7 @@ export default function Room() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   const playerRef = useRef<any>(null);
+  const currentVideoIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const initializationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -141,6 +142,7 @@ export default function Room() {
             },
             events: {
               onReady: () => {
+                currentVideoIdRef.current = roomStatus.videoId;
                 setIsPlayerReady(true);
                 if (initializationTimeoutRef.current) clearTimeout(initializationTimeoutRef.current);
               },
@@ -218,12 +220,10 @@ export default function Room() {
             const status: RoomStatus = await response.json();
             setRoomStatus(status);
 
-            if (playerRef.current && typeof playerRef.current.getVideoData === 'function') {
-              const currentVideoData = playerRef.current.getVideoData();
-              if (currentVideoData && currentVideoData.video_id !== status.videoId) {
+            if (currentVideoIdRef.current !== status.videoId) {
                  playerRef.current.loadVideoById(status.videoId);
+                 currentVideoIdRef.current = status.videoId;
                  setShowNextPrompt(false);
-              }
             }
 
             const localTime = playerRef.current.getCurrentTime();
@@ -232,11 +232,11 @@ export default function Room() {
             const playerState = playerRef.current.getPlayerState();
             if (status.isPaused && playerState === 1) {
               playerRef.current.pauseVideo();
-            } else if (!status.isPaused && (playerState === 2 || playerState === -1 || playerState === 0)) {
+            } else if (!status.isPaused && (playerState === 2 || playerState === -1 || playerState === 0 || playerState === 5)) {
               playerRef.current.playVideo();
             }
 
-            if (timeDiff > 2.0 && !status.isPaused) {
+            if (timeDiff > 2.0 && !status.isPaused && playerState !== 3) {
               playerRef.current.seekTo(status.currentTimestamp, true);
             }
           }
