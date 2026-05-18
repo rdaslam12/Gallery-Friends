@@ -332,16 +332,19 @@ export default function Room() {
   const uiOpacityClass = isUserActive ? "opacity-100" : "opacity-0 pointer-events-none";
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans">
-      {/* Video Player Background */}
-      <div className="absolute inset-0 z-0 bg-black flex items-center justify-center">
+    <div className="w-screen h-screen flex flex-col md:flex-row bg-[#050505] font-sans overflow-hidden">
+      
+      {/* Video Block (Flex Item) */}
+      <div className="flex-1 relative flex items-center justify-center bg-black min-h-0 min-w-0">
+        
+        {/* The YouTube or Drive Player */}
         <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
         
         {isDrive && resolvedDriveUrl && (
           <video
             ref={html5VideoRef}
             src={resolvedDriveUrl}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-auto"
+            className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
             controls
             autoPlay
             onPlay={() => {
@@ -356,17 +359,13 @@ export default function Room() {
             onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
           />
         )}
-      </div>
 
-      {/* Cinematic Overlays */}
-      <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 z-10 pointer-events-none transition-opacity duration-500 ${isUserActive ? "opacity-100" : "opacity-0"}`} />
+        {/* Cinematic gradient (over video) */}
+        <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 z-10 pointer-events-none transition-opacity duration-500 ${isUserActive ? "opacity-100" : "opacity-0"}`} />
 
-      {/* UI Overlay Wrapper */}
-      <div className={`absolute inset-0 z-30 pointer-events-none p-4 md:p-8 flex flex-col justify-between transition-opacity duration-500 ${uiOpacityClass}`}>
-        
-        {/* Top Header Region */}
-        <div className="flex justify-between items-start pointer-events-auto">
-           <div className="flex items-center gap-3">
+        {/* Top Header Region (Overlay inside video) */}
+        <div className={`absolute top-0 left-0 right-0 z-20 p-4 md:p-8 flex justify-between items-start pointer-events-none transition-opacity duration-500 ${uiOpacityClass}`}>
+           <div className="flex items-center gap-3 pointer-events-auto">
               <div className="w-10 h-10 rounded-xl bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/10 shadow-2xl">
                 <Zap className="w-5 h-5 text-[#9d4edd] fill-current" />
               </div>
@@ -380,7 +379,7 @@ export default function Room() {
               </div>
            </div>
 
-           <div className="flex items-center gap-2">
+           <div className="flex items-center gap-2 pointer-events-auto">
              <button
                 onClick={() => {
                   navigator.clipboard.writeText(roomId || "");
@@ -390,7 +389,7 @@ export default function Room() {
                 className="flex items-center gap-2 px-4 py-2 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-xs text-white font-bold uppercase tracking-widest transition-all"
               >
                 {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                <span>{roomId}</span>
+                <span className="hidden sm:inline">{roomId}</span>
               </button>
               <button 
                 onClick={() => navigate("/")}
@@ -402,103 +401,115 @@ export default function Room() {
            </div>
         </div>
 
-        {/* Bottom Region */}
-        <div className="flex justify-between items-end gap-6 relative h-[60%]">
-            
-            {/* Play Next / Video End Prompt Overlay */}
-            <AnimatePresence>
-              {showNextPrompt && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 20 }}
-                  className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-md pointer-events-auto z-40 transition-opacity duration-300"
-                >
-                   <div className="text-center mb-6">
-                      <h3 className="text-xl font-bold mb-2 text-white">Video Ended</h3>
-                      {!isHost && <p className="text-white/50 text-sm">Waiting for the host to select the next video.</p>}
-                   </div>
-                   
-                   {isHost && (
-                     <form onSubmit={handleNextVideoSubmit} className="space-y-4">
-                       <input 
-                         type="text" 
-                         placeholder="Paste next YouTube URL..."
-                         className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/10 text-sm text-white focus:border-[#9d4edd] outline-none transition-colors"
-                         value={nextVideoUrl}
-                         onChange={(e) => setNextVideoUrl(e.target.value)}
-                       />
-                       <button 
-                         type="submit"
-                         disabled={!nextVideoUrl}
-                         className="w-full py-3 bg-[#9d4edd] hover:bg-[#833bc2] rounded-xl font-bold text-white uppercase tracking-widest text-xs transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                       >
-                         <ArrowRight className="w-4 h-4"/> Play Next
-                       </button>
-                     </form>
-                   )}
-                </motion.div>
-              )}
-            </AnimatePresence>
+        {/* Play Next Prompt */}
+        <AnimatePresence>
+          {showNextPrompt && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-2xl w-[90%] max-w-md pointer-events-auto z-40 transition-opacity duration-300"
+            >
+               <div className="text-center mb-6">
+                  <h3 className="text-xl font-bold mb-2 text-white">Video Ended</h3>
+                  {!isHost && <p className="text-white/50 text-sm">Waiting for the host to select the next video.</p>}
+               </div>
+               
+               {isHost && (
+                 <form onSubmit={handleNextVideoSubmit} className="space-y-4">
+                   <input 
+                     type="text" 
+                     placeholder="Paste next YouTube URL..."
+                     className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/10 text-sm text-white focus:border-[#9d4edd] outline-none transition-colors"
+                     value={nextVideoUrl}
+                     onChange={(e) => setNextVideoUrl(e.target.value)}
+                   />
+                   <button 
+                     type="submit"
+                     disabled={!nextVideoUrl}
+                     className="w-full py-3 bg-[#9d4edd] hover:bg-[#833bc2] rounded-xl font-bold text-white uppercase tracking-widest text-xs transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                   >
+                     <ArrowRight className="w-4 h-4"/> Play Next
+                   </button>
+                 </form>
+               )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-            {/* Chat Area - Transparent Bubble Style */}
-            <AnimatePresence>
-              {isChatVisible && (
-                <motion.div 
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  className="w-full max-w-md flex flex-col gap-4 pointer-events-auto h-full"
-                >
-                  <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar flex flex-col justify-end pb-2 [mask-image:linear-gradient(to_top,black_85%,transparent)]">
-                     {messages.map((msg) => (
-                        <div key={msg.id} className="flex flex-col gap-1 w-fit max-w-[85%]">
-                          <span className="text-[10px] text-white/70 uppercase font-bold tracking-wider ml-3 drop-shadow-md">
-                            {msg.username}
-                          </span>
-                          <div className={`px-4 py-2.5 rounded-[20px] text-sm leading-relaxed backdrop-blur-md shadow-lg text-white/90 ${msg.username === username ? "bg-[#9d4edd]/80 rounded-bl-sm" : "bg-black/40 border border-white/10 rounded-tl-sm"}`}>
-                             {msg.message_text}
-                          </div>
-                        </div>
-                     ))}
-                     <div ref={chatEndRef} />
-                  </div>
-                  
-                  <form onSubmit={handleSendMessage} className="relative">
-                    <input
-                      type="text"
-                      className="w-full pl-5 pr-12 py-4 bg-black/40 backdrop-blur-xl border border-white/10 rounded-full outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white shadow-xl"
-                      placeholder="Comment..."
-                      value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
-                    />
-                    <button
-                      type="submit"
-                      disabled={!newMessage.trim()}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 bg-[#9d4edd] hover:bg-[#8a3ec9] rounded-full flex items-center justify-center disabled:opacity-50 transition-colors shadow-glow text-white"
-                    >
-                      <ArrowRight className="w-5 h-5" />
-                    </button>
-                  </form>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Right Side Control (Toggle Chat) */}
-            <div className="flex items-end gap-3 pointer-events-auto justify-end">
-                <button
-                  onClick={() => setIsChatVisible(!isChatVisible)}
-                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-xl border shadow-xl ${
-                    isChatVisible ? "bg-white/20 border-white/20 text-white" : "bg-black/40 border-white/10 text-white/60 hover:bg-white/10 hover:text-white"
-                  }`}
-                  title="Toggle Chat"
-                >
-                  <MessageSquare className="w-5 h-5" />
-                </button>
-            </div>
-            
-        </div>
+        {/* Float Right Side Chat Toggle (When closed) */}
+        {!isChatVisible && (
+           <div className={`absolute bottom-6 right-6 md:bottom-auto md:top-24 md:right-6 pointer-events-auto z-40 transition-opacity duration-500 ${uiOpacityClass}`}>
+             <button
+                onClick={() => setIsChatVisible(true)}
+                className="w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 shadow-[0_0_15px_rgba(157,78,221,0.2)] backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition-all"
+                title="Open Chat"
+              >
+                <MessageSquare className="w-5 h-5" />
+              </button>
+           </div>
+        )}
       </div>
+
+      {/* Chat Area (Right Side or Bottom) */}
+      <AnimatePresence initial={false}>
+        {isChatVisible && (
+          <motion.div 
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: "auto", opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            className="h-[40vh] md:h-full md:w-[350px] w-full bg-[#0d0d0d] border-t md:border-t-0 md:border-l border-white/5 flex flex-col shrink-0 overflow-hidden relative z-50"
+          >
+            {/* Chat Head */}
+            <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0">
+               <span className="text-[10px] font-mono text-white/50 uppercase tracking-widest flex items-center gap-2">
+                 <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Live Chat
+               </span>
+               <button
+                  onClick={() => setIsChatVisible(false)}
+                  className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white transition-colors"
+               >
+                 <ArrowRight className="w-4 h-4 md:hidden rotate-90" />
+                 <ArrowRight className="w-4 h-4 hidden md:block" />
+               </button>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+               {messages.map((msg) => (
+                  <div key={msg.id} className="flex flex-col gap-1 w-full max-w-[90%]">
+                    <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider ml-1">
+                      {msg.username}
+                    </span>
+                    <div className={`px-4 py-2.5 text-sm leading-relaxed text-white/90 ${msg.username === username ? "bg-[#9d4edd]/20 border border-[#9d4edd]/50 rounded-2xl rounded-tr-sm ml-auto" : "bg-white/5 border border-white/5 rounded-2xl rounded-tl-sm mr-auto"}`}>
+                       {msg.message_text}
+                    </div>
+                  </div>
+               ))}
+               <div ref={chatEndRef} />
+            </div>
+
+            {/* Input Form */}
+            <form onSubmit={handleSendMessage} className="p-4 bg-black/40 border-t border-white/5 shrink-0 relative">
+              <input
+                type="text"
+                className="w-full pl-4 pr-12 py-3 bg-white/10 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white"
+                placeholder="Message..."
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+              />
+              <button
+                type="submit"
+                disabled={!newMessage.trim()}
+                className="absolute right-6 top-1/2 -translate-y-1/2 w-8 h-8 bg-[#9d4edd] hover:bg-[#833bc2] rounded-md flex items-center justify-center disabled:opacity-50 transition-colors text-white"
+              >
+                <ArrowRight className="w-4 h-4 -rotate-45" />
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Loading Overlay */}
       {(!isPlayerReady || loadError) && (

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Play, Plus, Zap, User, Lock, Mail, ArrowLeft, LogIn } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -8,7 +8,7 @@ type LandingState = "initial" | "login" | "guest" | "actions" | "create" | "join
 export default function Landing() {
   const [view, setView] = useState<LandingState>("initial");
   
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState(localStorage.getItem("syncStream_username") || "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   
@@ -17,6 +17,12 @@ export default function Landing() {
   const [isLoading, setIsLoading] = useState(false);
   
   const navigate = useNavigate();
+
+  useEffect(() => {
+     if (username) {
+         setView("actions");
+     }
+  }, []);
 
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
