@@ -203,6 +203,7 @@ export default function Room() {
               currentTimestamp: currentTime,
               isPaused: isPaused,
               sessionId: sessionId,
+              videoId: roomStatus?.videoId,
             }),
           });
         } catch (e) {}

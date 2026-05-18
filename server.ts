@@ -82,7 +82,7 @@ async function startServer() {
 
   // Get Room Status
   app.get("/api/room/:roomId/status", async (req, res) => {
-    const { roomId } = req.params;
+    const roomId = req.params.roomId.trim().toUpperCase();
     try {
       const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
       const room = stmt.get(roomId);
@@ -105,14 +105,20 @@ async function startServer() {
 
   // Update Room Status (Host Only usually, but we check session IDs)
   app.post("/api/room/:roomId/update", async (req, res) => {
-    const { roomId } = req.params;
-    const { currentTimestamp, isPaused, sessionId } = req.body;
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { currentTimestamp, isPaused, sessionId, videoId } = req.body;
 
     try {
-      const stmt = db.prepare("SELECT host_session_id FROM rooms WHERE room_id = ?");
+      const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
       const room = stmt.get(roomId);
       
       if (!room) {
+        // Recover room if the server restarted (ephemeral storage on Render)
+        if (videoId && sessionId) {
+           const insertStmt = db.prepare("INSERT INTO rooms (room_id, video_id, current_timestamp, is_paused, host_session_id) VALUES (?, ?, ?, ?, ?)");
+           insertStmt.run(roomId, videoId, currentTimestamp, isPaused ? 1 : 0, sessionId);
+           return res.json({ success: true, recovered: true });
+        }
         return res.status(404).json({ error: "Room not found" });
       }
 
@@ -132,7 +138,7 @@ async function startServer() {
 
   // Change Video (Host Only)
   app.post("/api/room/:roomId/change-video", async (req, res) => {
-    const { roomId } = req.params;
+    const roomId = req.params.roomId.trim().toUpperCase();
     const { videoUrl, sessionId } = req.body;
 
     // Extract video ID
@@ -144,10 +150,16 @@ async function startServer() {
     }
 
     try {
-      const stmt = db.prepare("SELECT host_session_id FROM rooms WHERE room_id = ?");
+      const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
       const room = stmt.get(roomId);
       
       if (!room) {
+        // Recover room if it was lost
+        if (sessionId) {
+           const insertStmt = db.prepare("INSERT INTO rooms (room_id, video_id, current_timestamp, is_paused, host_session_id) VALUES (?, ?, 0, 1, ?)");
+           insertStmt.run(roomId, videoId, sessionId);
+           return res.json({ success: true, videoId, recovered: true });
+        }
         return res.status(404).json({ error: "Room not found" });
       }
 
@@ -166,7 +178,7 @@ async function startServer() {
 
   // Send Message
   app.post("/api/room/:roomId/messages", async (req, res) => {
-    const { roomId } = req.params;
+    const roomId = req.params.roomId.trim().toUpperCase();
     const { username, messageText } = req.body;
 
     try {
@@ -180,7 +192,7 @@ async function startServer() {
 
   // Get Messages
   app.get("/api/room/:roomId/messages", async (req, res) => {
-    const { roomId } = req.params;
+    const roomId = req.params.roomId.trim().toUpperCase();
     try {
       const stmt = db.prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY timestamp ASC");
       const messages = stmt.all(roomId);
