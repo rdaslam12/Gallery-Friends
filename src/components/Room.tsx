@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight } from "lucide-react";
+import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight, ArrowDown } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RoomStatus, ChatMessage } from "../types";
 
@@ -39,7 +39,7 @@ export default function Room() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const prevMessagesLength = useRef(messages.length);
-  const isScrolledUp = useRef(false);
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
   const tempChatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const initializationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -81,20 +81,21 @@ export default function Room() {
          if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
          tempChatTimeoutRef.current = setTimeout(() => {
            setIsChatTemporarilyVisible(false);
-         }, 3000);
+         }, 2000);
       }
-      if (!isScrolledUp.current) {
+      if (!isScrolledUp) {
          chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
       }
     }
     prevMessagesLength.current = messages.length;
-  }, [messages, isChatVisible]);
+  }, [messages, isChatVisible, isScrolledUp]);
 
   const handleChatScroll = () => {
     if (chatContainerRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
       // Scrolled up if distance from bottom is greater than 50px
-      isScrolledUp.current = Math.ceil(scrollTop + clientHeight) < scrollHeight - 50;
+      const scrolled = Math.ceil(scrollTop + clientHeight) < scrollHeight - 50;
+      setIsScrolledUp(scrolled);
     }
   };
 
@@ -505,9 +506,7 @@ export default function Room() {
                  <ArrowRight className="w-4 h-4 md:hidden rotate-90" />
                  <ArrowRight className="w-4 h-4 hidden md:block" />
                </button>
-            </div>
-
-            {/* Messages */}
+            </div>            {/* Messages */}
             <div 
               ref={chatContainerRef}
               onScroll={handleChatScroll}
@@ -525,6 +524,24 @@ export default function Room() {
                ))}
                <div ref={chatEndRef} />
             </div>
+
+            {/* Scroll down indicator */}
+            <AnimatePresence>
+               {isScrolledUp && (
+                 <motion.button
+                   initial={{ opacity: 0, y: 10 }}
+                   animate={{ opacity: 1, y: 0 }}
+                   exit={{ opacity: 0, y: 10 }}
+                   onClick={() => {
+                     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                     setIsScrolledUp(false);
+                   }}
+                   className="absolute bottom-[80px] right-4 bg-[#9d4edd] hover:bg-[#833bc2] text-white w-8 h-8 rounded-full flex items-center justify-center shadow-lg transition-colors z-50 pointer-events-auto"
+                 >
+                   <ArrowDown className="w-4 h-4" />
+                 </motion.button>
+               )}
+            </AnimatePresence>
 
             {/* Input Form */}
             <form onSubmit={handleSendMessage} className="p-4 bg-black/40 border-t border-white/5 shrink-0 relative">

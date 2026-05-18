@@ -285,9 +285,12 @@ export default function Landing() {
           </AnimatePresence>
         </div>
 
-        <footer className="text-center">
+        <footer className="text-center space-y-2">
           <p className="text-white/20 text-[10px] uppercase font-bold tracking-[0.3em]">
             Optimized for Cinema. No Latency.
+          </p>
+          <p className="text-white/40 text-[10px] uppercase font-bold tracking-[0.3em]">
+            Built by Golu
           </p>
         </footer>
       </div>
