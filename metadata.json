@@ -1,0 +1,6 @@
+{
+  "name": "Gallery Friends",
+  "description": "A high-performance, distraction-free YouTube watch party app using synchronized polling and SQLite storage.",
+  "requestFramePermissions": ["autoplay", "encrypted-media", "fullscreen-videoplayer"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
