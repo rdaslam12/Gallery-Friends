@@ -77,33 +77,32 @@ async function startServer() {
   // Resolve Google Drive Direct URL
   app.get("/api/drive-url/:fileId", async (req, res) => {
     const fileId = req.params.fileId;
-    const https = require("https");
-    const url = `https://drive.usercontent.google.com/download?id=${fileId}&export=download`;
-
-    https.get(url, (response: any) => {
-      let data = "";
-      response.on("data", (chunk: any) => data += chunk.toString());
-      response.on("end", () => {
-        // Check for virus scan form
-        const confirmMatch = data.match(/name="confirm" value="([^"]+)"/);
-        const uuidMatch = data.match(/name="uuid" value="([^"]+)"/);
-        
-        if (confirmMatch && uuidMatch) {
-           const confirm = confirmMatch[1];
-           const uuid = uuidMatch[1];
-           const finalUrl = `${url}&confirm=${confirm}&uuid=${uuid}`;
-           res.json({ url: finalUrl });
-        } else {
-           // If no form, it might be the direct redirect or small file
-           res.json({ url: `https://drive.google.com/uc?export=download&id=${fileId}` });
-        }
-      });
-      response.on("error", () => {
-        res.json({ url: `https://drive.google.com/uc?export=download&id=${fileId}` });
-      });
-    }).on("error", () => {
-       res.json({ url: `https://drive.google.com/uc?export=download&id=${fileId}` });
-    });
+    try {
+      const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      const response = await fetch(url);
+      
+      const text = await response.text();
+      
+      // Check for virus scan form
+      const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
+      const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
+      
+      if (confirmMatch && uuidMatch) {
+         const confirm = confirmMatch[1];
+         const uuid = uuidMatch[1];
+         // We construct the final URL based on the response.url since fetch follows redirects
+         const parsedUrl = new URL(response.url);
+         parsedUrl.searchParams.set("confirm", confirm);
+         parsedUrl.searchParams.set("uuid", uuid);
+         
+         res.json({ url: parsedUrl.toString() });
+      } else {
+         res.json({ url: response.url });
+      }
+    } catch (err) {
+      console.error("Error resolving Google Drive URL:", err);
+      res.json({ url: `https://drive.google.com/uc?export=download&id=${fileId}` });
+    }
   });
 
   // Create Room
