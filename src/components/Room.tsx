@@ -203,7 +203,7 @@ export default function Room() {
               currentTimestamp: currentTime,
               isPaused: isPaused,
               sessionId: sessionId,
-              videoId: roomStatus?.videoId,
+              videoId: playerRef.current?.getVideoData?.()?.video_id || roomStatus?.videoId,
             }),
           });
         } catch (e) {}
@@ -279,8 +279,12 @@ export default function Room() {
       });
       
       if (response.ok) {
+        const data = await response.json();
         setNextVideoUrl("");
         setShowNextPrompt(false);
+        if (data.videoId) {
+          setRoomStatus(prev => prev ? { ...prev, videoId: data.videoId } : null);
+        }
       } else {
         alert("Failed to change video");
       }
