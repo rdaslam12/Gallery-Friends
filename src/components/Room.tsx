@@ -160,7 +160,11 @@ export default function Room() {
                 }
               },
               onError: (e: any) => {
-                setLoadError(`YouTube Player Error: ${e.data}`);
+                console.error(`YouTube Player Error: ${e.data}`);
+                if (isHost) {
+                  setShowNextPrompt(true);
+                  setIsUserActive(true);
+                }
               }
             },
           });
