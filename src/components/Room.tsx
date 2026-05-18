@@ -159,17 +159,8 @@ export default function Room() {
     if (!roomStatus) return;
 
     if (isDrive && actualVideoId) {
-      if (!resolvedDriveUrl || !resolvedDriveUrl.includes(actualVideoId)) {
-         fetch(`/api/drive-url/${actualVideoId}`)
-           .then(res => res.json())
-           .then(data => {
-             setResolvedDriveUrl(data.url);
-             setIsPlayerReady(true);
-           })
-           .catch(() => {
-             setLoadError("Failed to fetch Google Drive url.");
-           });
-      }
+      setResolvedDriveUrl(`/api/proxy-video/${actualVideoId}`);
+      setIsPlayerReady(true);
       return;
     }
 

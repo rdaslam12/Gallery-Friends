@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
+import https from "https";
 
 async function startServer() {
   const app = express();
@@ -74,7 +75,63 @@ async function startServer() {
 
   // API Routes
   
-  // Resolve Google Drive Direct URL
+  // Streaming proxy for Google Drive Video
+  app.get("/api/proxy-video/:fileId", async (req, res) => {
+    const fileId = req.params.fileId;
+    try {
+      const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      const response = await fetch(url);
+      
+      let finalUrl = response.url;
+      const text = await response.text();
+      
+      const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
+      const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
+      
+      if (confirmMatch && uuidMatch) {
+         const parsedUrl = new URL(response.url);
+         parsedUrl.searchParams.set("confirm", confirmMatch[1]);
+         parsedUrl.searchParams.set("uuid", uuidMatch[1]);
+         finalUrl = parsedUrl.toString();
+      }
+
+      const headers: Record<string, string> = {};
+      if (req.headers.range) {
+        headers["Range"] = req.headers.range;
+      }
+      
+      // Use https to fetch and pipe
+      https.get(finalUrl, { headers }, (videoResponse: any) => {
+        if (videoResponse.statusCode === 206 || videoResponse.statusCode === 200) {
+          res.status(videoResponse.statusCode);
+          
+          Object.keys(videoResponse.headers).forEach((key) => {
+            const lowerKey = key.toLowerCase();
+            if (lowerKey !== 'cross-origin-resource-policy' && lowerKey !== 'cross-origin-opener-policy' && lowerKey !== 'cross-origin-embedder-policy') {
+              res.setHeader(key, videoResponse.headers[key]);
+            }
+          });
+          
+          videoResponse.pipe(res);
+        } else {
+          res.status(videoResponse.statusCode).end();
+        }
+      }).on("error", (err: any) => {
+        console.error("HTTPS stream error:", err);
+        if (!res.headersSent) {
+          res.status(500).end(`Error: ${err.message}`);
+        }
+      });
+      
+    } catch (err: any) {
+      console.error("Error proxying Google Drive URL:", err.stack || err);
+      if (!res.headersSent) {
+        res.status(500).end(`Error: ${err.message}`);
+      }
+    }
+  });
+
+  // Resolve Google Drive Direct URL - Kept for legacy fallback or direct links if needed
   app.get("/api/drive-url/:fileId", async (req, res) => {
     const fileId = req.params.fileId;
     try {
