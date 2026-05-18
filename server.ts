@@ -76,44 +76,74 @@ async function startServer() {
   // API Routes
   
   // Streaming proxy for Google Drive Video
+  const driveCache = new Map<string, { finalUrl: string, cookie: string, timestamp: number }>();
+
   app.get("/api/proxy-video/:fileId", async (req, res) => {
     const fileId = req.params.fileId;
     try {
-      const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
-      const response = await fetch(url);
+      let cached = driveCache.get(fileId);
       
-      let finalUrl = response.url;
-      const text = await response.text();
-      
-      const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
-      const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
-      
-      if (confirmMatch && uuidMatch) {
-         const parsedUrl = new URL(response.url);
-         parsedUrl.searchParams.set("confirm", confirmMatch[1]);
-         parsedUrl.searchParams.set("uuid", uuidMatch[1]);
-         finalUrl = parsedUrl.toString();
+      // Expire cache after 1 hour (3600000 ms)
+      if (cached && (Date.now() - cached.timestamp > 3600000)) {
+        cached = undefined;
+        driveCache.delete(fileId);
+      }
+
+      if (!cached) {
+        const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+        const response = await fetch(url);
+        
+        let finalUrl = response.url;
+        const cookie = response.headers.get("set-cookie") || "";
+        const text = await response.text();
+        
+        const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
+        const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
+        
+        if (confirmMatch && uuidMatch) {
+           const parsedUrl = new URL(response.url);
+           parsedUrl.searchParams.set("confirm", confirmMatch[1]);
+           parsedUrl.searchParams.set("uuid", uuidMatch[1]);
+           finalUrl = parsedUrl.toString();
+        }
+
+        cached = { finalUrl, cookie, timestamp: Date.now() };
+        driveCache.set(fileId, cached);
       }
 
       const headers: Record<string, string> = {};
       if (req.headers.range) {
         headers["Range"] = req.headers.range;
       }
+      if (cached.cookie) {
+         headers["Cookie"] = cached.cookie;
+      }
       
       // Use https to fetch and pipe
-      https.get(finalUrl, { headers }, (videoResponse: any) => {
+      const https = require("https");
+      https.get(cached.finalUrl, { headers }, (videoResponse: any) => {
         if (videoResponse.statusCode === 206 || videoResponse.statusCode === 200) {
           res.status(videoResponse.statusCode);
           
           Object.keys(videoResponse.headers).forEach((key) => {
             const lowerKey = key.toLowerCase();
-            if (lowerKey !== 'cross-origin-resource-policy' && lowerKey !== 'cross-origin-opener-policy' && lowerKey !== 'cross-origin-embedder-policy') {
+            // Do NOT forward CORP headers to allow cross-origin embedding, 
+            // and do not forward keep-alive if our proxy manages it differently
+            if (lowerKey !== 'cross-origin-resource-policy' && 
+                lowerKey !== 'cross-origin-opener-policy' && 
+                lowerKey !== 'cross-origin-embedder-policy' &&
+                lowerKey !== 'connection' &&
+                lowerKey !== 'keep-alive') {
               res.setHeader(key, videoResponse.headers[key]);
             }
           });
           
           videoResponse.pipe(res);
         } else {
+          // If 403 or other error, clear cache so next try fetches fresh token
+          if (videoResponse.statusCode >= 400 && videoResponse.statusCode < 500) {
+             driveCache.delete(fileId);
+          }
           res.status(videoResponse.statusCode).end();
         }
       }).on("error", (err: any) => {
