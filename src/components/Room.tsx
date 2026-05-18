@@ -26,6 +26,7 @@ export default function Room() {
   const [ytApiReady, setYtApiReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [resolvedDriveUrl, setResolvedDriveUrl] = useState<string | null>(null);
 
   const [showNextPrompt, setShowNextPrompt] = useState(false);
   const [nextVideoUrl, setNextVideoUrl] = useState("");
@@ -157,8 +158,18 @@ export default function Room() {
   useEffect(() => {
     if (!roomStatus) return;
 
-    if (isDrive) {
-      setIsPlayerReady(true);
+    if (isDrive && actualVideoId) {
+      if (!resolvedDriveUrl || !resolvedDriveUrl.includes(actualVideoId)) {
+         fetch(`/api/drive-url/${actualVideoId}`)
+           .then(res => res.json())
+           .then(data => {
+             setResolvedDriveUrl(data.url);
+             setIsPlayerReady(true);
+           })
+           .catch(() => {
+             setLoadError("Failed to fetch Google Drive url.");
+           });
+      }
       return;
     }
 
@@ -335,10 +346,10 @@ export default function Room() {
       <div className="absolute inset-0 z-0 bg-black flex items-center justify-center">
         <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
         
-        {isDrive && (
+        {isDrive && resolvedDriveUrl && (
           <video
             ref={html5VideoRef}
-            src={`https://drive.google.com/uc?export=download&id=${actualVideoId}`}
+            src={resolvedDriveUrl}
             className="absolute inset-0 w-full h-full object-contain pointer-events-auto"
             controls
             autoPlay
