@@ -214,17 +214,25 @@ export default function Room() {
             const status: RoomStatus = await response.json();
             setRoomStatus(status);
 
+            if (playerRef.current && typeof playerRef.current.getVideoData === 'function') {
+              const currentVideoData = playerRef.current.getVideoData();
+              if (currentVideoData && currentVideoData.video_id !== status.videoId) {
+                 playerRef.current.loadVideoById(status.videoId);
+                 setShowNextPrompt(false);
+              }
+            }
+
             const localTime = playerRef.current.getCurrentTime();
             const timeDiff = Math.abs(localTime - status.currentTimestamp);
 
             const playerState = playerRef.current.getPlayerState();
             if (status.isPaused && playerState === 1) {
               playerRef.current.pauseVideo();
-            } else if (!status.isPaused && (playerState === 2 || playerState === -1)) {
+            } else if (!status.isPaused && (playerState === 2 || playerState === -1 || playerState === 0)) {
               playerRef.current.playVideo();
             }
 
-            if (timeDiff > 2.0) {
+            if (timeDiff > 2.0 && !status.isPaused) {
               playerRef.current.seekTo(status.currentTimestamp, true);
             }
           }
@@ -283,7 +291,10 @@ export default function Room() {
         setNextVideoUrl("");
         setShowNextPrompt(false);
         if (data.videoId) {
-          setRoomStatus(prev => prev ? { ...prev, videoId: data.videoId } : null);
+          setRoomStatus(prev => prev ? { ...prev, videoId: data.videoId, isPaused: 1, currentTimestamp: 0 } : null);
+          if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
+            playerRef.current.loadVideoById(data.videoId);
+          }
         }
       } else {
         alert("Failed to change video");
