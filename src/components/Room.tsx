@@ -21,6 +21,7 @@ export default function Room() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [isChatVisible, setIsChatVisible] = useState(true);
+  const [isChatTemporarilyVisible, setIsChatTemporarilyVisible] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [ytApiReady, setYtApiReady] = useState(false);
@@ -36,6 +37,10 @@ export default function Room() {
   const playerRef = useRef<any>(null);
   const html5VideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const prevMessagesLength = useRef(messages.length);
+  const isScrolledUp = useRef(false);
+  const tempChatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const initializationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -67,6 +72,31 @@ export default function Room() {
       if (!isDrive && playerRef.current?.seekTo) playerRef.current.seekTo(time, allowSeekAhead);
     }
   });
+
+  // Autoscroll chat and temporary chat visibility
+  useEffect(() => {
+    if (messages.length > prevMessagesLength.current) {
+      if (!isChatVisible) {
+         setIsChatTemporarilyVisible(true);
+         if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
+         tempChatTimeoutRef.current = setTimeout(() => {
+           setIsChatTemporarilyVisible(false);
+         }, 3000);
+      }
+      if (!isScrolledUp.current) {
+         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
+    }
+    prevMessagesLength.current = messages.length;
+  }, [messages, isChatVisible]);
+
+  const handleChatScroll = () => {
+    if (chatContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+      // Scrolled up if distance from bottom is greater than 50px
+      isScrolledUp.current = Math.ceil(scrollTop + clientHeight) < scrollHeight - 50;
+    }
+  };
 
   // Initialize display name if missing
   useEffect(() => {
@@ -285,11 +315,6 @@ export default function Room() {
     };
   }, [isPlayerReady, isHost, roomId, sessionId, isDrive]);
 
-  // Autoscroll chat
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !username) return;
@@ -438,10 +463,14 @@ export default function Room() {
         </AnimatePresence>
 
         {/* Float Right Side Chat Toggle (When closed) */}
-        {!isChatVisible && (
+        {(!isChatVisible && !isChatTemporarilyVisible) && (
            <div className={`absolute bottom-6 right-6 md:bottom-auto md:top-24 md:right-6 pointer-events-auto z-40 transition-opacity duration-500 ${uiOpacityClass}`}>
              <button
-                onClick={() => setIsChatVisible(true)}
+                onClick={() => {
+                  setIsChatVisible(true);
+                  if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
+                  setIsChatTemporarilyVisible(false);
+                }}
                 className="w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 shadow-[0_0_15px_rgba(157,78,221,0.2)] backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition-all"
                 title="Open Chat"
               >
@@ -453,21 +482,24 @@ export default function Room() {
 
       {/* Chat Area (Right Side or Bottom) */}
       <AnimatePresence initial={false}>
-        {isChatVisible && (
+        {(isChatVisible || isChatTemporarilyVisible) && (
           <motion.div 
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: "auto", opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className="h-[40vh] md:h-full md:w-[350px] w-full bg-[#0d0d0d] border-t md:border-t-0 md:border-l border-white/5 flex flex-col shrink-0 overflow-hidden relative z-50"
+            className={`h-[40vh] md:h-full md:w-[350px] w-full bg-[#0d0d0d] border-t md:border-t-0 md:border-l border-white/5 flex flex-col shrink-0 overflow-hidden ${isChatTemporarilyVisible && !isChatVisible ? 'fixed right-0 bottom-0 md:top-0 z-[100]' : 'relative z-[60]'} shadow-2xl`}
           >
             {/* Chat Head */}
-            <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0">
+            <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0 pointer-events-auto">
                <span className="text-[10px] font-mono text-white/50 uppercase tracking-widest flex items-center gap-2">
                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Live Chat
                </span>
                <button
-                  onClick={() => setIsChatVisible(false)}
+                  onClick={() => {
+                    setIsChatVisible(false);
+                    setIsChatTemporarilyVisible(false);
+                  }}
                   className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white transition-colors"
                >
                  <ArrowRight className="w-4 h-4 md:hidden rotate-90" />
@@ -476,7 +508,11 @@ export default function Room() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+            <div 
+              ref={chatContainerRef}
+              onScroll={handleChatScroll}
+              className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar pointer-events-auto"
+            >
                {messages.map((msg) => (
                   <div key={msg.id} className="flex flex-col gap-1 w-full max-w-[90%]">
                     <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider ml-1">

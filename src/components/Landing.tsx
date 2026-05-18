@@ -9,12 +9,14 @@ export default function Landing() {
   const [view, setView] = useState<LandingState>("initial");
   
   const [username, setUsername] = useState(localStorage.getItem("syncStream_username") || "");
+  const [authId, setAuthId] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
   
   const navigate = useNavigate();
 
@@ -22,13 +24,57 @@ export default function Landing() {
      if (username) {
          setView("actions");
      }
-  }, []);
+  }, [username]);
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username) return;
-    localStorage.setItem("syncStream_username", username);
-    setView("actions");
+    setAuthError("");
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ loginId: authId, password })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem("syncStream_username", data.username);
+        setUsername(data.username);
+        setView("actions");
+      } else {
+        const data = await res.json();
+        setAuthError(data.error || "Login failed");
+      }
+    } catch (e) {
+      setAuthError("Network error during login");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, email, password })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem("syncStream_username", data.username);
+        setView("actions");
+      } else {
+        const data = await res.json();
+        setAuthError(data.error || "Registration failed");
+      }
+    } catch (e) {
+      setAuthError("Network error during registration");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGuestSubmit = (e: React.FormEvent) => {
@@ -36,6 +82,14 @@ export default function Landing() {
     if (!username) return;
     localStorage.setItem("syncStream_username", username);
     setView("actions");
+  };
+
+  const logout = () => {
+    localStorage.removeItem("syncStream_username");
+    setUsername("");
+    setAuthId("");
+    setPassword("");
+    setView("initial");
   };
 
   const handleCreateRoom = async (e: React.FormEvent) => {
@@ -130,6 +184,30 @@ export default function Landing() {
               <motion.form key="login" onSubmit={handleLoginSubmit} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
                 <button type="button" onClick={() => setView("initial")} className="flex items-center gap-2 text-[#9d4edd] text-[10px] font-bold uppercase tracking-widest hover:text-[#b366ff] transition-colors mb-4"><ArrowLeft className="w-3 h-3" /> Back</button>
                 <div className="space-y-4">
+                  {authError && <div className="text-red-400 text-xs text-center">{authError}</div>}
+                  <div className="relative">
+                    <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+                    <input type="text" placeholder="USERNAME OR EMAIL" required className="w-full pl-12 pr-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm tracking-wider text-white" value={authId} onChange={(e) => setAuthId(e.target.value)} />
+                  </div>
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+                    <input type="password" placeholder="PASSWORD" required className="w-full pl-12 pr-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm tracking-wider text-white" value={password} onChange={(e) => setPassword(e.target.value)} />
+                  </div>
+                </div>
+                <button type="submit" disabled={!authId || !password || isLoading} className="w-full py-4 bg-[#9d4edd] hover:bg-[#8a3ec9] disabled:opacity-50 text-white font-bold text-xs uppercase tracking-[0.3em] rounded-xl transition-all shadow-glow flex justify-center items-center">
+                  {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Enter Gallery'}
+                </button>
+                <div className="text-center mt-4 text-xs font-mono text-white/50">
+                   Don't have an account? <button type="button" onClick={() => setView("create_account")} className="text-[#9d4edd] hover:text-white transition-colors uppercase tracking-widest">Register</button>
+                </div>
+              </motion.form>
+            )}
+
+            {view === "create_account" as LandingState && (
+              <motion.form key="create_account" onSubmit={handleRegisterSubmit} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+                <button type="button" onClick={() => setView("login")} className="flex items-center gap-2 text-[#9d4edd] text-[10px] font-bold uppercase tracking-widest hover:text-[#b366ff] transition-colors mb-4"><ArrowLeft className="w-3 h-3" /> Back to Login</button>
+                <div className="space-y-4">
+                  {authError && <div className="text-red-400 text-xs text-center">{authError}</div>}
                   <div className="relative">
                     <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
                     <input type="text" placeholder="USERNAME" required className="w-full pl-12 pr-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm tracking-wider text-white" value={username} onChange={(e) => setUsername(e.target.value)} />
@@ -143,8 +221,8 @@ export default function Landing() {
                     <input type="password" placeholder="PASSWORD" required className="w-full pl-12 pr-5 py-4 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm tracking-wider text-white" value={password} onChange={(e) => setPassword(e.target.value)} />
                   </div>
                 </div>
-                <button type="submit" disabled={!username || !email || !password} className="w-full py-4 bg-[#9d4edd] hover:bg-[#8a3ec9] disabled:opacity-50 text-white font-bold text-xs uppercase tracking-[0.3em] rounded-xl transition-all shadow-glow">
-                  Enter Gallery
+                <button type="submit" disabled={!username || !email || !password || isLoading} className="w-full py-4 bg-[#9d4edd] hover:bg-[#8a3ec9] disabled:opacity-50 text-white font-bold text-xs uppercase tracking-[0.3em] rounded-xl transition-all shadow-glow flex justify-center items-center">
+                   {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Create Account'}
                 </button>
               </motion.form>
             )}

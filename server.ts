@@ -36,10 +36,47 @@ async function startServer() {
       message_text TEXT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      username TEXT UNIQUE NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL
+    );
   `);
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", db: !!db });
+  });
+
+  // Auth Routes
+  app.post("/api/register", (req, res) => {
+    const { username, email, password } = req.body;
+    try {
+      const stmt = db.prepare("INSERT INTO users (username, email, password) VALUES (?, ?, ?)");
+      stmt.run(username, email, password);
+      res.json({ success: true, username });
+    } catch (err: any) {
+      if (err.message.includes('UNIQUE constraint failed')) {
+        res.status(400).json({ error: "Username or email already exists" });
+      } else {
+        res.status(500).json({ error: "Registration failed" });
+      }
+    }
+  });
+
+  app.post("/api/login", (req, res) => {
+    const { loginId, password } = req.body;
+    try {
+      const stmt = db.prepare("SELECT * FROM users WHERE (username = ? OR email = ?) AND password = ?");
+      const user = stmt.get(loginId, loginId, password);
+      if (user) {
+        res.json({ success: true, username: user.username });
+      } else {
+        res.status(401).json({ error: "Invalid credentials" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Login failed" });
+    }
   });
 
   // Helper for unique Room ID
