@@ -205,8 +205,8 @@ export default function Room() {
             if (!isPlayerReady) setIsPlayerReady(true);
           }, 8000);
 
-        } catch (err) {
-          setLoadError("Failed to initialize player component");
+        } catch (err: any) {
+          setLoadError(`Failed to init YouTube: ${err?.message || err}`);
         }
       } else if (playerRef.current && typeof playerRef.current.getVideoData === "function") {
          const currentVideoData = playerRef.current.getVideoData();
@@ -333,11 +333,13 @@ export default function Room() {
     <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans">
       {/* Video Player Background */}
       <div className="absolute inset-0 z-0 bg-black flex items-center justify-center">
-        {isDrive ? (
+        <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
+        
+        {isDrive && (
           <video
             ref={html5VideoRef}
             src={`https://drive.google.com/uc?export=download&id=${actualVideoId}`}
-            className="w-full h-full object-contain pointer-events-auto"
+            className="absolute inset-0 w-full h-full object-contain pointer-events-auto"
             controls
             autoPlay
             onPlay={() => {
@@ -351,8 +353,6 @@ export default function Room() {
             }}
             onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
           />
-        ) : (
-          <div id="youtube-player" className="w-full h-full pointer-events-auto" />
         )}
       </div>
 
