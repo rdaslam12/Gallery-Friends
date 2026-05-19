@@ -44,6 +44,12 @@ async function startServer() {
     );
   `);
 
+  try {
+    db.prepare("SELECT reply_to_id FROM messages LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER;");
+  }
+
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", db: !!db });
   });
@@ -351,13 +357,14 @@ async function startServer() {
   // Send Message
   app.post("/api/room/:roomId/messages", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { username, messageText } = req.body;
+    const { username, messageText, replyToId } = req.body;
 
     try {
-      const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
-      stmt.run(roomId, username, messageText);
+      const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text, reply_to_id) VALUES (?, ?, ?, ?)");
+      stmt.run(roomId, username, messageText, replyToId || null);
       res.json({ success: true });
     } catch (err) {
+      console.error(err);
       res.status(500).json({ error: "Message failure" });
     }
   });

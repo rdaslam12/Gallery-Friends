@@ -11,4 +11,5 @@ export interface ChatMessage {
   username: string;
   message_text: string;
   timestamp: string;
+  reply_to_id?: number | null;
 }

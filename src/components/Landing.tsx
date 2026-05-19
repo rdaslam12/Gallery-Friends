@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Play, Plus, Zap, User, Lock, Mail, ArrowLeft, LogIn } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
-type LandingState = "initial" | "login" | "guest" | "actions" | "create" | "join";
+type LandingState = "initial" | "login" | "guest" | "actions" | "create" | "join" | "create_account";
 
 export default function Landing() {
   const [view, setView] = useState<LandingState>("initial");

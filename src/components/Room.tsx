@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight, ArrowDown } from "lucide-react";
+import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight, ArrowDown, Layout, X, Maximize, Minimize } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RoomStatus, ChatMessage } from "../types";
 
@@ -20,24 +20,29 @@ export default function Room() {
   const [roomStatus, setRoomStatus] = useState<RoomStatus | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(true);
   const [isChatTemporarilyVisible, setIsChatTemporarilyVisible] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [ytApiReady, setYtApiReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isChatOverlayMode, setIsChatOverlayMode] = useState(false);
   const [copied, setCopied] = useState(false);
   const [resolvedDriveUrl, setResolvedDriveUrl] = useState<string | null>(null);
+  const [activeReactions, setActiveReactions] = useState<{id: number, emoji: string, startX: number}[]>([]);
 
   const [showNextPrompt, setShowNextPrompt] = useState(false);
   const [nextVideoUrl, setNextVideoUrl] = useState("");
   const [isUserActive, setIsUserActive] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(document.fullscreenElement !== null);
 
   const playerRef = useRef<any>(null);
   const html5VideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const playedReactionsRef = useRef<Set<number>>(new Set());
   const prevMessagesLength = useRef(messages.length);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const tempChatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -76,15 +81,38 @@ export default function Room() {
   // Autoscroll chat and temporary chat visibility
   useEffect(() => {
     if (messages.length > prevMessagesLength.current) {
-      if (!isChatVisible) {
-         setIsChatTemporarilyVisible(true);
-         if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
-         tempChatTimeoutRef.current = setTimeout(() => {
-           setIsChatTemporarilyVisible(false);
-         }, 2000);
+      const newMessages = messages.slice(prevMessagesLength.current);
+      
+      // Floating reactions
+      const newReactions = newMessages.filter(m => m.message_text?.startsWith("[EMOJI]:") && !playedReactionsRef.current.has(m.id));
+      if (newReactions.length > 0) {
+         newReactions.forEach(r => playedReactionsRef.current.add(r.id));
+         const spawns = newReactions.flatMap(m => {
+            const emoji = m.message_text.replace("[EMOJI]:", "");
+            return Array.from({length: 8}).map(() => ({
+              id: Math.random(),
+              emoji,
+              startX: Math.random() * 80 - 40,
+            }));
+         });
+         setActiveReactions(prev => [...prev, ...spawns]);
+         setTimeout(() => {
+            setActiveReactions(prev => prev.filter(r => !spawns.some(s => s.id === r.id)));
+         }, 1500);
       }
-      if (!isScrolledUp) {
-         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+
+      const hasStandardMessages = newMessages.some(m => !m.message_text?.startsWith("[EMOJI]:"));
+      if (hasStandardMessages) {
+        if (!isChatVisible) {
+           setIsChatTemporarilyVisible(true);
+           if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
+           tempChatTimeoutRef.current = setTimeout(() => {
+             setIsChatTemporarilyVisible(false);
+           }, 2500); // Wait 2.5s before disappearing
+        }
+        if (!isScrolledUp) {
+           chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
       }
     }
     prevMessagesLength.current = messages.length;
@@ -121,7 +149,7 @@ export default function Room() {
       if (isPlaying) {
         activityTimeoutRef.current = setTimeout(() => {
           setIsUserActive(false);
-        }, 3000);
+        }, 2000);
       }
     };
 
@@ -135,6 +163,24 @@ export default function Room() {
       if (activityTimeoutRef.current) clearTimeout(activityTimeoutRef.current);
     };
   }, [isPlaying]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement !== null);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => {
+        console.error(`Error attempting to enable fullscreen: ${err.message}`);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   // Load YouTube API
   useEffect(() => {
@@ -206,7 +252,8 @@ export default function Room() {
               rel: 0,
               modestbranding: 1,
               origin: window.location.origin,
-              enablejsapi: 1
+              enablejsapi: 1,
+              fs: 0
             },
             events: {
               onReady: () => {
@@ -327,9 +374,22 @@ export default function Room() {
         body: JSON.stringify({
           username: username,
           messageText: newMessage,
+          replyToId: replyTarget ? replyTarget.id : null,
         }),
       });
       setNewMessage("");
+      setReplyTarget(null);
+    } catch (e) {}
+  };
+
+  const handleSendEmoji = async (emoji: string) => {
+    if (!username) return;
+    try {
+      await fetch(`/api/room/${roomId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, messageText: `[EMOJI]:${emoji}` }),
+      });
     } catch (e) {}
   };
 
@@ -356,51 +416,54 @@ export default function Room() {
   };
 
   const uiOpacityClass = isUserActive ? "opacity-100" : "opacity-0 pointer-events-none";
+  const isEffectiveChatOverlayMode = isFullscreen || isChatOverlayMode;
 
   return (
     <div className="w-screen h-screen flex flex-col md:flex-row bg-[#050505] font-sans overflow-hidden">
       
       {/* Video Block (Flex Item) */}
-      <div className="flex-1 relative flex items-center justify-center bg-black min-h-0 min-w-0">
+      <div className="flex-1 relative flex items-center justify-center bg-[#050505] min-h-0 min-w-0 p-2 md:p-4 md:pt-12 md:pb-12">
         
-        {/* The YouTube or Drive Player */}
-        <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
-        
-        {isDrive && resolvedDriveUrl && (
-          <video
-            ref={html5VideoRef}
-            src={resolvedDriveUrl}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
-            controls
-            autoPlay
-            onPlay={() => {
-              setIsPlaying(true);
-              if (isHost) setShowNextPrompt(false);
-            }}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => {
-              setShowNextPrompt(true);
-              if (isHost) setIsUserActive(true);
-            }}
-            onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
-          />
-        )}
+        {/* The YouTube or Drive Player Wrapper */}
+        <div className="relative w-full h-full bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl z-0 pointer-events-auto">
+          <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
+          
+          {isDrive && resolvedDriveUrl && (
+            <video
+              ref={html5VideoRef}
+              src={resolvedDriveUrl}
+              className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
+              controls
+              autoPlay
+              onPlay={() => {
+                setIsPlaying(true);
+                if (isHost) setShowNextPrompt(false);
+              }}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => {
+                setShowNextPrompt(true);
+                if (isHost) setIsUserActive(true);
+              }}
+              onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
+            />
+          )}
+        </div>
 
         {/* Cinematic gradient (over video) */}
         <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 z-10 pointer-events-none transition-opacity duration-500 ${isUserActive ? "opacity-100" : "opacity-0"}`} />
 
         {/* Top Header Region (Overlay inside video) */}
-        <div className={`absolute top-0 left-0 right-0 z-20 p-4 md:p-8 flex justify-between items-start pointer-events-none transition-opacity duration-500 ${uiOpacityClass}`}>
-           <div className="flex items-center gap-3 pointer-events-auto">
-              <div className="w-10 h-10 rounded-xl bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/10 shadow-2xl">
-                <Zap className="w-5 h-5 text-[#9d4edd] fill-current" />
+        <div className={`absolute top-0 left-0 right-0 z-20 p-2 md:p-4 flex justify-between items-start pointer-events-none transition-opacity duration-500 ${uiOpacityClass}`}>
+           <div className="flex items-center gap-2 pointer-events-auto">
+              <div className="w-6 h-6 rounded-lg bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/10 shadow-2xl">
+                <Zap className="w-3 h-3 text-[#9d4edd] fill-current" />
               </div>
               <div>
-                <h1 className="text-xl font-bold tracking-tight text-white drop-shadow-md">Gallery Friends</h1>
-                <div className="flex items-center gap-2 text-[10px] text-white/80 uppercase tracking-widest font-mono drop-shadow-md">
-                  {isHost ? <span className="text-[#9d4edd] font-bold">Host</span> : <span>Guest</span>}
-                  <span>•</span>
-                  <span>{username}</span>
+                <h1 className="text-xs md:text-sm font-bold tracking-tight text-white drop-shadow-md">Gallery Friends</h1>
+                <div className="flex items-center gap-1 text-[8px] text-white/80 uppercase tracking-widest font-mono drop-shadow-md leading-[14px]">
+                  {isHost ? <span className="text-[#9d4edd] font-bold text-[6px]">Host</span> : <span className="text-[6px]">Guest</span>}
+                  <span className="text-[6px]">•</span>
+                  <span className="text-[6px]">{username}</span>
                 </div>
               </div>
            </div>
@@ -412,17 +475,24 @@ export default function Room() {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
-                className="flex items-center gap-2 px-4 py-2 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-xs text-white font-bold uppercase tracking-widest transition-all"
+                className="flex items-center gap-1 px-2 py-1 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-[10px] text-white font-bold uppercase tracking-widest transition-all"
               >
-                {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+                {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
                 <span className="hidden sm:inline">{roomId}</span>
               </button>
               <button 
                 onClick={() => navigate("/")}
-                className="w-10 h-10 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500/40 backdrop-blur-md border border-red-500/20 flex items-center justify-center transition-colors"
+                className="w-6 h-6 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500/40 backdrop-blur-md border border-red-500/20 flex items-center justify-center transition-colors"
                 title="Quit Session"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-3 h-3" />
+              </button>
+              <button
+                onClick={toggleFullscreen}
+                className="w-6 h-6 rounded-full bg-white/10 text-white hover:bg-white/20 backdrop-blur-md border border-white/10 flex items-center justify-center transition-colors"
+                title="Toggle Fullscreen"
+              >
+                {isFullscreen ? <Minimize className="w-3 h-3" /> : <Maximize className="w-3 h-3" />}
               </button>
            </div>
         </div>
@@ -481,47 +551,95 @@ export default function Room() {
         )}
       </div>
 
-      {/* Chat Area (Right Side or Bottom) */}
+      <AnimatePresence>
+         {activeReactions.map(reaction => (
+           <motion.div
+             key={reaction.id}
+             initial={{ opacity: 1, y: 0, x: isEffectiveChatOverlayMode ? ((window.innerWidth < 768 ? 20 : 40) + reaction.startX) : (window.innerWidth - 180 + reaction.startX), scale: 0.5 }}
+             animate={{ opacity: 0, y: -200 - Math.random() * 200, x: (isEffectiveChatOverlayMode ? ((window.innerWidth < 768 ? 20 : 40) + reaction.startX + (Math.random() * 80 - 40)) : (window.innerWidth - 180 + reaction.startX + (Math.random() * 80 - 40))), scale: 1.5 }}
+             exit={{ opacity: 0 }}
+             transition={{ duration: 1.5 + Math.random() * 0.5, ease: "easeOut" }}
+             className="fixed bottom-[140px] text-4xl drop-shadow-xl z-[200] pointer-events-none"
+           >
+             {reaction.emoji}
+           </motion.div>
+         ))}
+      </AnimatePresence>
+
+      {/* Chat Area (Right Side or Bottom or Overlay) */}
       <AnimatePresence initial={false}>
         {(isChatVisible || isChatTemporarilyVisible) && (
           <motion.div 
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: "auto", opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className={`h-[40vh] md:h-full md:w-[350px] w-full bg-[#0d0d0d] border-t md:border-t-0 md:border-l border-white/5 flex flex-col shrink-0 overflow-hidden ${isChatTemporarilyVisible && !isChatVisible ? 'fixed right-0 bottom-0 md:top-0 z-[100]' : 'relative z-[60]'} shadow-2xl`}
+            className={
+              isEffectiveChatOverlayMode
+                ? `absolute bottom-24 left-4 md:left-8 h-[50vh] w-[90vw] md:w-[320px] bg-transparent border-none flex flex-col shrink-0 overflow-hidden z-[60] transition-opacity duration-500 ${(isUserActive || isChatTemporarilyVisible) ? "opacity-100" : "opacity-0 pointer-events-none"}`
+                : `h-[40vh] md:h-full md:w-[320px] w-full bg-[#0d0d0d] border-t md:border-t-0 md:border-l border-white/5 flex flex-col shrink-0 overflow-hidden ${isChatTemporarilyVisible && !isChatVisible ? 'fixed right-0 bottom-0 md:top-0 z-[100]' : 'relative z-[60]'} shadow-2xl transition-all`
+            }
           >
             {/* Chat Head */}
-            <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0 pointer-events-auto">
+            <div className={`p-4 ${isEffectiveChatOverlayMode ? "border-transparent" : "border-b border-white/5"} flex items-center justify-between shrink-0 pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
                <span className="text-[10px] font-mono text-white/50 uppercase tracking-widest flex items-center gap-2">
                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Live Chat
                </span>
-               <button
-                  onClick={() => {
-                    setIsChatVisible(false);
-                    setIsChatTemporarilyVisible(false);
-                  }}
-                  className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white transition-colors"
-               >
-                 <ArrowRight className="w-4 h-4 md:hidden rotate-90" />
-                 <ArrowRight className="w-4 h-4 hidden md:block" />
-               </button>
+               <div className="flex items-center gap-2">
+                 {!isFullscreen && (
+                   <button
+                      onClick={() => setIsChatOverlayMode(!isChatOverlayMode)}
+                      className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white transition-colors backdrop-blur-md"
+                      title={isChatOverlayMode ? "Switch to Sidebar" : "Switch to Overlay"}
+                   >
+                     <Layout className="w-4 h-4" />
+                   </button>
+                 )}
+                 <button
+                    onClick={() => {
+                      setIsChatVisible(false);
+                      setIsChatTemporarilyVisible(false);
+                    }}
+                    className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white transition-colors backdrop-blur-md"
+                 >
+                   <ArrowRight className={`w-4 h-4 ${isEffectiveChatOverlayMode ? 'rotate-90' : 'md:hidden rotate-90'}`} />
+                   <ArrowRight className={`w-4 h-4 hidden ${isEffectiveChatOverlayMode ? '' : 'md:block'}`} />
+                 </button>
+               </div>
             </div>            {/* Messages */}
             <div 
               ref={chatContainerRef}
               onScroll={handleChatScroll}
-              className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar pointer-events-auto"
+              className={`flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar pointer-events-auto relative transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+              style={{ maskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to top, black 80%, transparent)' : 'none', WebkitMaskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to bottom, transparent, black 20%, black 90%, transparent)' : 'none' }}
             >
-               {messages.map((msg) => (
-                  <div key={msg.id} className="flex flex-col gap-1 w-full max-w-[90%]">
-                    <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider ml-1">
+               {messages.filter(m => !m.message_text?.startsWith("[EMOJI]:")).map((msg) => {
+                  const replyMsg = msg.reply_to_id ? messages.find(m => m.id === msg.reply_to_id) : null;
+                  const isMe = msg.username === username;
+                  const isRightAligned = !isEffectiveChatOverlayMode && isMe;
+                  return (
+                  <div key={msg.id} className={`flex flex-col gap-1 w-full max-w-[90%] drop-shadow-lg group relative ${isRightAligned ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                    <span className={`text-[10px] text-white/60 uppercase font-bold tracking-wider mx-1 ${isEffectiveChatOverlayMode ? "drop-shadow-md" : ""}`}>
                       {msg.username}
                     </span>
-                    <div className={`px-4 py-2.5 text-sm leading-relaxed text-white/90 ${msg.username === username ? "bg-[#9d4edd]/20 border border-[#9d4edd]/50 rounded-2xl rounded-tr-sm ml-auto" : "bg-white/5 border border-white/5 rounded-2xl rounded-tl-sm mr-auto"}`}>
+                    <div className={`px-4 py-2.5 text-sm leading-relaxed relative ${isEffectiveChatOverlayMode ? "bg-transparent border-none text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] px-0" : `text-white/90 backdrop-blur-sm ${isMe ? "bg-[#9d4edd]/50 border border-[#9d4edd]/50 rounded-2xl rounded-tr-sm" : "bg-black/60 border border-white/10 rounded-2xl rounded-tl-sm"}`}`}>
+                       {replyMsg && (
+                         <div className="text-xs bg-black/20 p-2 rounded-lg mb-2 border-l-2 border-white/50">
+                           <span className="font-bold text-white/50 text-[10px] uppercase block mb-0.5">{replyMsg.username}</span>
+                           <span className="text-white/70 line-clamp-2">{replyMsg.message_text}</span>
+                         </div>
+                       )}
                        {msg.message_text}
                     </div>
+                    <button 
+                       onClick={() => { setReplyTarget(msg); document.getElementById('chat-input')?.focus(); }}
+                       className={`absolute top-5 ${isRightAligned ? '-left-8' : '-right-8'} opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-black/40 hover:bg-black/80 rounded-full text-white/50 hover:text-white border border-white/5 backdrop-blur-md`}
+                       title="Reply"
+                    >
+                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                    </button>
                   </div>
-               ))}
+               )})}
                <div ref={chatEndRef} />
             </div>
 
@@ -536,7 +654,7 @@ export default function Room() {
                      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
                      setIsScrolledUp(false);
                    }}
-                   className="absolute bottom-[80px] right-4 bg-[#9d4edd] hover:bg-[#833bc2] text-white w-8 h-8 rounded-full flex items-center justify-center shadow-lg transition-colors z-50 pointer-events-auto"
+                   className="absolute bottom-[200px] right-4 bg-[#9d4edd] hover:bg-[#833bc2] text-white w-8 h-8 rounded-full flex items-center justify-center shadow-lg transition-colors z-50 pointer-events-auto"
                  >
                    <ArrowDown className="w-4 h-4" />
                  </motion.button>
@@ -544,22 +662,51 @@ export default function Room() {
             </AnimatePresence>
 
             {/* Input Form */}
-            <form onSubmit={handleSendMessage} className="p-4 bg-black/40 border-t border-white/5 shrink-0 relative">
-              <input
-                type="text"
-                className="w-full pl-4 pr-12 py-3 bg-white/10 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white"
-                placeholder="Message..."
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-              />
-              <button
-                type="submit"
-                disabled={!newMessage.trim()}
-                className="absolute right-6 top-1/2 -translate-y-1/2 w-8 h-8 bg-[#9d4edd] hover:bg-[#833bc2] rounded-md flex items-center justify-center disabled:opacity-50 transition-colors text-white"
-              >
-                <ArrowRight className="w-4 h-4 -rotate-45" />
-              </button>
-            </form>
+            <div className={`${isEffectiveChatOverlayMode ? "bg-transparent border-transparent" : "bg-black/40 border-t border-white/5"} shrink-0 relative flex flex-col pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+              <form onSubmit={handleSendMessage} className="p-4 flex gap-2 relative flex-col">
+                {replyTarget && (
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-2 flex items-start justify-between mb-2">
+                    <div className="flex flex-col text-xs overflow-hidden">
+                      <span className="font-bold text-[#9d4edd] uppercase tracking-wider text-[10px] mb-0.5">Replying to {replyTarget.username}</span>
+                      <span className="text-white/70 line-clamp-1 truncate">{replyTarget.message_text}</span>
+                    </div>
+                    <button type="button" onClick={() => setReplyTarget(null)} className="text-white/40 hover:text-white p-1">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+                <div className="relative flex w-full">
+                  <input
+                    id="chat-input"
+                    type="text"
+                    autoComplete="off"
+                    className={`w-full pl-4 pr-12 py-3 bg-white/10 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white ${isEffectiveChatOverlayMode ? "backdrop-blur-md shadow-xl" : ""}`}
+                    placeholder="Message..."
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim()}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-[#9d4edd] hover:bg-[#833bc2] rounded-md flex items-center justify-center disabled:opacity-50 transition-colors text-white cursor-pointer"
+                  >
+                    <ArrowRight className="w-4 h-4 -rotate-45" />
+                  </button>
+                </div>
+              </form>
+              <div className="px-4 pb-4 flex gap-2 overflow-x-auto custom-scrollbar">
+                 {["😂", "❤️", "🔥", "👍", "👏", "😮", "🎉"].map(emoji => (
+                   <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => handleSendEmoji(emoji)}
+                      className={`w-8 h-8 shrink-0 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors text-sm border border-white/5 hover:border-white/20 ${isEffectiveChatOverlayMode ? "backdrop-blur-md shadow-lg" : ""}`}
+                   >
+                     {emoji}
+                   </button>
+                 ))}
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
