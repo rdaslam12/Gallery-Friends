@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight, ArrowDown, Layout, X, Maximize, Minimize } from "lucide-react";
+import { Copy, Check, MessageSquare, Zap, LogOut, ArrowRight, ArrowDown, Layout, X, Maximize, Minimize, Subtitles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RoomStatus, ChatMessage } from "../types";
 
@@ -37,9 +37,11 @@ export default function Room() {
   const [isUserActive, setIsUserActive] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(document.fullscreenElement !== null);
+  const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
 
   const playerRef = useRef<any>(null);
   const html5VideoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const playedReactionsRef = useRef<Set<number>>(new Set());
@@ -103,7 +105,7 @@ export default function Room() {
 
       const hasStandardMessages = newMessages.some(m => !m.message_text?.startsWith("[EMOJI]:"));
       if (hasStandardMessages) {
-        if (!isChatVisible) {
+        if (!isChatVisible || isEffectiveChatOverlayMode) {
            setIsChatTemporarilyVisible(true);
            if (tempChatTimeoutRef.current) clearTimeout(tempChatTimeoutRef.current);
            tempChatTimeoutRef.current = setTimeout(() => {
@@ -180,6 +182,29 @@ export default function Room() {
     } else {
       document.exitFullscreen();
     }
+  };
+
+  const handleSubtitleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      let text = event.target?.result as string;
+      
+      if (file.name.endsWith('.srt')) {
+        text = 'WEBVTT\n\n' + text.replace(/\{\\([ib])\}/g, '<$1>')
+                  .replace(/\{\\\/([ib])\}/g, '</$1>')
+                  .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+                  .replace(/\r\n/g, '\n');
+      }
+      
+      const blob = new Blob([text], { type: 'text/vtt' });
+      const url = URL.createObjectURL(blob);
+      setSubtitleUrl(url);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // Load YouTube API
@@ -445,12 +470,14 @@ export default function Room() {
                 if (isHost) setIsUserActive(true);
               }}
               onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
-            />
+            >
+              {subtitleUrl && <track kind="subtitles" src={subtitleUrl} srcLang="en" label="Local Subtitles" default />}
+            </video>
           )}
         </div>
 
-        {/* Cinematic gradient (over video) */}
-        <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 z-10 pointer-events-none transition-opacity duration-500 ${isUserActive ? "opacity-100" : "opacity-0"}`} />
+        {/* Cinematic gradient (over video) - Removed */}
+        
 
         {/* Top Header Region (Overlay inside video) */}
         <div className={`absolute top-0 left-0 right-0 z-20 p-2 md:p-4 flex justify-between items-start pointer-events-none transition-opacity duration-500 ${uiOpacityClass}`}>
@@ -487,6 +514,24 @@ export default function Room() {
               >
                 <LogOut className="w-3 h-3" />
               </button>
+              {isDrive && (
+                <>
+                  <input 
+                    type="file" 
+                    accept=".srt,.vtt"
+                    ref={fileInputRef} 
+                    onChange={handleSubtitleUpload}
+                    className="hidden" 
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`w-6 h-6 rounded-full ${subtitleUrl ? 'bg-[#9d4edd]/50 text-white border-[#9d4edd]' : 'bg-white/10 text-white hover:bg-white/20 border-white/10'} backdrop-blur-md border flex items-center justify-center transition-colors`}
+                    title="Load Subtitles"
+                  >
+                    <Subtitles className="w-3 h-3" />
+                  </button>
+                </>
+              )}
               <button
                 onClick={toggleFullscreen}
                 className="w-6 h-6 rounded-full bg-white/10 text-white hover:bg-white/20 backdrop-blur-md border border-white/10 flex items-center justify-center transition-colors"
@@ -581,7 +626,7 @@ export default function Room() {
             }
           >
             {/* Chat Head */}
-            <div className={`p-4 ${isEffectiveChatOverlayMode ? "border-transparent" : "border-b border-white/5"} flex items-center justify-between shrink-0 pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+            <div className={`p-4 ${isEffectiveChatOverlayMode ? "border-transparent" : "border-b border-white/5"} flex items-center justify-between shrink-0 pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive && !isChatTemporarilyVisible ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
                <span className="text-[10px] font-mono text-white/50 uppercase tracking-widest flex items-center gap-2">
                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Live Chat
                </span>
@@ -610,7 +655,7 @@ export default function Room() {
             <div 
               ref={chatContainerRef}
               onScroll={handleChatScroll}
-              className={`flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar pointer-events-auto relative transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+              className={`flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar pointer-events-auto relative transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive && !isChatTemporarilyVisible ? "opacity-0 pointer-events-none" : "opacity-100"}`}
               style={{ maskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to top, black 80%, transparent)' : 'none', WebkitMaskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to bottom, transparent, black 20%, black 90%, transparent)' : 'none' }}
             >
                {messages.filter(m => !m.message_text?.startsWith("[EMOJI]:")).map((msg) => {
@@ -662,7 +707,7 @@ export default function Room() {
             </AnimatePresence>
 
             {/* Input Form */}
-            <div className={`${isEffectiveChatOverlayMode ? "bg-transparent border-transparent" : "bg-black/40 border-t border-white/5"} shrink-0 relative flex flex-col pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+            <div className={`${isEffectiveChatOverlayMode ? "bg-transparent border-transparent" : "bg-black/40 border-t border-white/5"} shrink-0 relative flex flex-col pointer-events-auto transition-opacity duration-500 ${isEffectiveChatOverlayMode && !isUserActive && !isChatTemporarilyVisible ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
               <form onSubmit={handleSendMessage} className="p-4 flex gap-2 relative flex-col">
                 {replyTarget && (
                   <div className="bg-white/5 border border-white/10 rounded-lg p-2 flex items-start justify-between mb-2">
