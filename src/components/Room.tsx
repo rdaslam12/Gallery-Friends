@@ -237,7 +237,15 @@ export default function Room() {
 
   // Detect user inactive for controls display fade
   useEffect(() => {
-    const handleActivity = () => {
+    const handleActivity = (e?: any) => {
+      if (e && e.target) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+          if (e.type === "keydown") {
+            return;
+          }
+        }
+      }
       setIsUserActive(true);
       if (activityTimeoutRef.current) clearTimeout(activityTimeoutRef.current);
       activityTimeoutRef.current = setTimeout(() => {
@@ -275,7 +283,15 @@ export default function Room() {
       return;
     }
 
-    const handleCinemaActivity = () => {
+    const handleCinemaActivity = (e?: any) => {
+      if (e && e.target) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+          if (e.type === "keydown") {
+            return;
+          }
+        }
+      }
       setIsOverlayActive(true);
       if (overlayActivityTimeoutRef.current) clearTimeout(overlayActivityTimeoutRef.current);
       overlayActivityTimeoutRef.current = setTimeout(() => {
@@ -909,12 +925,12 @@ export default function Room() {
 
   return (
     <div className={`relative overflow-hidden w-screen h-screen bg-[#020202] font-sans select-none ${
-      viewMode === "cinema" ? "" : "flex flex-col md:flex-row"
+      viewMode === "cinema" ? "" : "flex flex-col sm:flex-row"
     }`}>
       
       {/* 1. Live View Mode: Roster Panel on Left (240px wide) */}
       {viewMode === "live" && (
-        <div className="w-full md:w-60 bg-[#070707] border-b md:border-b-0 md:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5">
+        <div className="w-full sm:w-60 bg-[#070707] border-b sm:border-b-0 sm:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5">
            <div className="flex items-center gap-2 mb-2 border-b border-white/5 pb-3">
              <Users className="w-4 h-4 text-[#9d4edd]" />
              <span className="text-[10px] font-mono tracking-widest text-white/70 uppercase">Roster Mesh</span>
@@ -1295,7 +1311,7 @@ export default function Room() {
           <div 
             onMouseEnter={() => setIsChatHovered(true)}
             onMouseLeave={() => setIsChatHovered(false)}
-            className={`flex shrink-0 h-[45vh] md:h-full relative select-none text-left transition-all duration-500 ease-in-out ${
+            className={`flex shrink-0 h-[45vh] sm:h-full relative select-none text-left transition-all duration-500 ease-in-out ${
               viewMode === "cinema" 
                 ? "absolute right-0 left-auto top-0 bottom-0 h-full w-[380px] z-50" 
                 : "z-[60]"
@@ -1309,7 +1325,7 @@ export default function Room() {
             {/* Draggable divider line */}
             <div 
               onMouseDown={handleMouseDown}
-              className={`w-1 cursor-col-resize hover:bg-[#9d4edd] bg-transparent h-full transition-colors hidden md:block select-none shr-0 ${
+              className={`w-1 cursor-col-resize hover:bg-[#9d4edd] bg-transparent h-full transition-colors hidden sm:block select-none shr-0 ${
                 viewMode === "cinema" ? "hidden md:hidden" : ""
               }`}
               title="Drag to resize chat panel"
@@ -1318,14 +1334,14 @@ export default function Room() {
             <motion.div 
               onFocusCapture={() => setIsChatFocused(true)}
               onBlurCapture={() => setIsChatFocused(false)}
-              style={{ width: viewMode === "cinema" ? "100%" : (window.innerWidth < 768 ? "100%" : `${chatWidth}px`) }}
+              style={{ width: viewMode === "cinema" ? "100%" : (window.innerWidth < 640 ? "100%" : `${chatWidth}px`) }}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
               className={`${
                 viewMode === "cinema" 
                   ? "bg-transparent backdrop-filter-none border-none shadow-none" 
-                  : "bg-[#0b0c0e] border-t md:border-t-0 md:border-l border-white/5"
+                  : "bg-[#0b0c0e] border-t sm:border-t-0 sm:border-l border-white/5"
               } flex flex-col h-full overflow-hidden select-none`}
             >
               {/* Sidebar Header Tabs */}
@@ -1385,7 +1401,7 @@ export default function Room() {
                          }, {} as Record<string, number>) || {};
 
                          return (
-                           <div key={msg.id} className="flex flex-col gap-1 w-full max-w-[92%] relative group/bubble">
+                           <div key={msg.id} className={`flex flex-col gap-1 max-w-[92%] relative group/bubble ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
                              <div className="flex items-baseline gap-1.5 px-0.5">
                                <span className="text-[10px] text-white/55 font-bold uppercase tracking-wide">{msg.username}</span>
                                {msg.timestamp && (
@@ -1397,7 +1413,7 @@ export default function Room() {
                              <div className={
                                viewMode === "cinema"
                                  ? "px-1 py-1.5 text-sm leading-relaxed text-white relative bg-transparent border-0 shadow-none"
-                                 : `px-4 py-3 text-sm leading-relaxed rounded-2xl border ${isMe ? 'bg-[#9d4edd]/30 border-[#9d4edd]/35 text-white/95 rounded-tr-sm' : 'bg-black/45 border-white/5 text-white/90 rounded-tl-sm'} relative`
+                                 : `px-4 py-3 text-sm leading-relaxed rounded-2xl border w-fit max-w-full ${isMe ? 'bg-[#9d4edd]/30 border-[#9d4edd]/35 text-white/95 rounded-tr-sm' : 'bg-black/45 border-white/5 text-white/90 rounded-tl-sm'} relative`
                              }>
                                {replyMsg && (
                                  <div className={`text-xs p-2 rounded-lg mb-2 border-l-2 border-purple-500 opacity-80 flex flex-col text-left ${
@@ -1497,6 +1513,10 @@ export default function Room() {
                             id="chat-input"
                             type="text"
                             placeholder="Type a message..."
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            spellCheck={false}
                             disabled={isMyMutedText}
                             className={`w-full pl-4 pr-12 py-3 rounded-xl outline-none transition-all text-xs text-white disabled:opacity-40 ${
                               viewMode === "cinema"

@@ -221,10 +221,10 @@ async function startServer() {
       existing.isBuffering = !!isBuffering;
     }
 
-    // Process expired heartbeats (users not seen in the last 4.5 seconds)
+    // Process expired heartbeats (users not seen in the last 30 seconds)
     const deadSessionIds: string[] = [];
     presenceMap.forEach((user, sessId) => {
-      if (now - user.lastSeen > 4500) {
+      if (now - user.lastSeen > 30000) {
         deadSessionIds.push(sessId);
       }
     });
@@ -255,10 +255,10 @@ async function startServer() {
       });
     });
 
-    // Collate other users currently typing (excluding self, active in the last 4.5s)
+    // Collate other users currently typing (excluding self, active in the last 10s)
     const typingUsers: string[] = [];
     presenceMap.forEach((user, sessId) => {
-      if (sessId !== sessionId && user.isTyping && (now - user.lastSeen < 4500)) {
+      if (sessId !== sessionId && user.isTyping && (now - user.lastSeen < 10000)) {
         typingUsers.push(user.username);
       }
     });
