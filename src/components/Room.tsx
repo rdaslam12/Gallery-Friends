@@ -430,6 +430,20 @@ export default function Room() {
       });
       
       if (response.ok) {
+        const data = await response.json();
+        if (data.videoId) {
+          setRoomStatus(prev => prev ? {
+            ...prev,
+            videoId: data.videoId,
+            currentTimestamp: 0,
+            isPaused: true
+          } : {
+            videoId: data.videoId,
+            currentTimestamp: 0,
+            isPaused: true,
+            hostSessionId: sessionId
+          });
+        }
         setNextVideoUrl("");
         setShowNextPrompt(false);
       } else {
