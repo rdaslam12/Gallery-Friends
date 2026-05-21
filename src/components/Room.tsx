@@ -497,6 +497,7 @@ export default function Room() {
   }, [isDrive, resolvedDriveUrl]);
 
   // Initialize YT / HTML5 dependencies
+  // Load room details
   useEffect(() => {
     if (!roomId || !username) return;
 
@@ -516,32 +517,6 @@ export default function Room() {
 
         const isMeHost = data.hostSessionId === sessionId;
         setIsHost(isMeHost);
-
-        // Fetch Google Drive proxy VTT list if video is from Google Drive
-        if (data.videoId?.startsWith("drive:")) {
-          const fileId = data.videoId.replace("drive:", "");
-          setResolvedDriveUrl(`/api/drive-proxy/${fileId}`);
-          
-          fetch(`/api/drive-subtitles-list/${fileId}`)
-            .then(res => res.json())
-            .then(subData => {
-              if (subData.success && subData.tracks) {
-                setDriveSubtitleTracks(subData.tracks);
-              }
-            }).catch(e => console.error(e));
-        } else {
-          // If YouTube, load YT iframe API script if required
-          if (!window.YT) {
-            const tag = document.createElement("script");
-            tag.src = "https://www.youtube.com/iframe_api";
-            const firstScriptTag = document.getElementsByTagName("script")[0];
-            firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-
-            window.onYouTubeIframeAPIReady = () => setYtApiReady(true);
-          } else {
-            setYtApiReady(true);
-          }
-        }
       } catch (err) {
         setLoadError("Communication error checking room.");
       }
@@ -549,6 +524,62 @@ export default function Room() {
 
     loadRoom();
   }, [roomId, sessionId, username]);
+
+  // Load YouTube Iframe API script on mount if needed
+  useEffect(() => {
+    if (!window.YT) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName("script")[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+
+      window.onYouTubeIframeAPIReady = () => setYtApiReady(true);
+    } else {
+      setYtApiReady(true);
+    }
+  }, []);
+
+  // Synchronize active video content when roomStatus videoId changes
+  useEffect(() => {
+    if (!roomStatus?.videoId) return;
+
+    setIsPlayerReady(false);
+
+    if (isDrive) {
+      const fileId = roomStatus.videoId.replace("drive:", "");
+      const expectedUrl = `/api/proxy-video/${fileId}`;
+      setResolvedDriveUrl(expectedUrl);
+      
+      fetch(`/api/drive-subtitles-list/${fileId}`)
+        .then(res => res.json())
+        .then(subData => {
+          if (subData.success && subData.tracks) {
+            setDriveSubtitleTracks(subData.tracks);
+          } else {
+            setDriveSubtitleTracks([]);
+          }
+        }).catch(e => {
+          console.error(e);
+          setDriveSubtitleTracks([]);
+        });
+        
+    } else {
+      setResolvedDriveUrl(null);
+      setDriveSubtitleTracks([]);
+      
+      if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
+        try {
+          playerRef.current.loadVideoById({
+            videoId: actualVideoId,
+            startSeconds: roomStatus.currentTimestamp || 0
+          });
+          setIsPlayerReady(true);
+        } catch (e) {
+          console.error("Failed to load video on existing player instance", e);
+        }
+      }
+    }
+  }, [roomStatus?.videoId, actualVideoId]);
 
   // Instantiate YouTube Client once ready
   useEffect(() => {
@@ -828,7 +859,7 @@ export default function Room() {
             isPaused: true,
             hostSessionId: sessionId
           });
-          setResolvedDriveUrl(data.videoId.startsWith("drive:") ? `/api/drive-proxy/${data.videoId.replace("drive:", "")}` : null);
+          setResolvedDriveUrl(data.videoId.startsWith("drive:") ? `/api/proxy-video/${data.videoId.replace("drive:", "")}` : null);
         }
         setNextVideoUrl("");
       }

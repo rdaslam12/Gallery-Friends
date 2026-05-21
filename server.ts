@@ -377,7 +377,7 @@ async function startServer() {
     }
     
     // Google Drive match
-    if (cleanUrl.includes("drive.google.com")) {
+    if (cleanUrl.includes("drive.google.com") || cleanUrl.includes("docs.google.com")) {
       const driveMatch1 = cleanUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
       if (driveMatch1 && driveMatch1[1]) {
         return 'drive:' + driveMatch1[1];
@@ -395,7 +395,7 @@ async function startServer() {
   // Streaming proxy for Google Drive Video
   const driveCache = new Map<string, { finalUrl: string, cookie: string, timestamp: number }>();
 
-  app.get("/api/proxy-video/:fileId", async (req, res) => {
+  app.get(["/api/proxy-video/:fileId", "/api/drive-proxy/:fileId"], async (req, res) => {
     const fileId = req.params.fileId;
     try {
       let cached = driveCache.get(fileId);
