@@ -326,6 +326,19 @@ export default function Room() {
     };
   }, [ytApiReady, roomStatus, isDrive, actualVideoId]);
 
+  // Clear subtitles and trigger video updates when video changes
+  useEffect(() => {
+    setSubtitleUrl(null);
+  }, [actualVideoId]);
+
+  // Trigger HTML5 video load/play when source changes
+  useEffect(() => {
+    if (isDrive && html5VideoRef.current && resolvedDriveUrl) {
+      html5VideoRef.current.load();
+      html5VideoRef.current.play().catch(e => console.log("HTML5 autoplay blocked or waiting", e));
+    }
+  }, [resolvedDriveUrl, isDrive]);
+
   // Main Polling Loop
   useEffect(() => {
     if (!isPlayerReady || !roomId) return;
@@ -386,7 +399,7 @@ export default function Room() {
     return () => {
       if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     };
-  }, [isPlayerReady, isHost, roomId, sessionId, isDrive]);
+  }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();

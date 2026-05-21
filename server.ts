@@ -98,20 +98,29 @@ async function startServer() {
   // Parse video URL to support YouTube and Google Drive
   function parseVideoUrl(url: string): string | null {
     if (!url) return null;
-    // YouTube match
-    const ytMatch = url.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    const cleanUrl = url.trim();
+
+    // Direct 11-char YouTube ID fallback
+    if (/^[a-zA-Z0-9_-]{11}$/.test(cleanUrl)) {
+      return cleanUrl;
+    }
+
+    // YouTube match (including Shorts, Live, embed, etc.)
+    const ytMatch = cleanUrl.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts|live)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
     if (ytMatch && ytMatch[1]) {
-      return ytMatch[1]; // keep original yt format for backward compat
+      return ytMatch[1];
     }
     
     // Google Drive match
-    const driveMatch1 = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-    if (driveMatch1 && driveMatch1[1]) {
-      return 'drive:' + driveMatch1[1];
-    }
-    const driveMatch2 = url.match(/drive\.google\.com\/(?:open|uc)\?.*id=([a-zA-Z0-9_-]+)/);
-    if (driveMatch2 && driveMatch2[1]) {
-      return 'drive:' + driveMatch2[1];
+    if (cleanUrl.includes("drive.google.com")) {
+      const driveMatch1 = cleanUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (driveMatch1 && driveMatch1[1]) {
+        return 'drive:' + driveMatch1[1];
+      }
+      const driveMatch2 = cleanUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (driveMatch2 && driveMatch2[1]) {
+        return 'drive:' + driveMatch2[1];
+      }
     }
     return null;
   }
