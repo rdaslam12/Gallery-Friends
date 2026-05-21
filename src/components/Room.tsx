@@ -313,12 +313,20 @@ export default function Room() {
         } catch (err: any) {
           setLoadError(`Failed to init YouTube: ${err?.message || err}`);
         }
-      } else if (playerRef.current && typeof playerRef.current.getVideoData === "function") {
-         const currentVideoData = playerRef.current.getVideoData();
-         if (currentVideoData && currentVideoData.video_id !== actualVideoId) {
-           playerRef.current.loadVideoById(actualVideoId);
-           setShowNextPrompt(false);
-         }
+      } else if (playerRef.current) {
+        let currentVideoId = "";
+        if (typeof playerRef.current.getVideoData === "function") {
+          const currentVideoData = playerRef.current.getVideoData();
+          if (currentVideoData && currentVideoData.video_id) {
+            currentVideoId = currentVideoData.video_id;
+          }
+        }
+        if (currentVideoId !== actualVideoId) {
+          if (typeof playerRef.current.loadVideoById === "function") {
+            playerRef.current.loadVideoById(actualVideoId);
+            setShowNextPrompt(false);
+          }
+        }
       }
     }
     return () => {
@@ -347,22 +355,36 @@ export default function Room() {
       const unifiedPlayer = getUnifiedPlayer();
     
       if (isHost) {
-        const currentTime = unifiedPlayer.getCurrentTime();
-        const playerState = unifiedPlayer.getPlayerState();
-        const isPaused = playerState === 2 || playerState === -1;
+        let shouldSendUpdate = true;
+        if (!isDrive && playerRef.current) {
+          if (typeof playerRef.current.getVideoData === "function") {
+            const currentVideoData = playerRef.current.getVideoData();
+            if (!currentVideoData || !currentVideoData.video_id || currentVideoData.video_id !== actualVideoId) {
+              shouldSendUpdate = false;
+            }
+          } else {
+            shouldSendUpdate = false;
+          }
+        }
 
-        try {
-          await fetch(`/api/room/${roomId}/update`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              currentTimestamp: currentTime,
-              isPaused: isPaused,
-              sessionId: sessionId,
-              videoId: roomStatus?.videoId,
-            }),
-          });
-        } catch (e) {}
+        if (shouldSendUpdate) {
+          const currentTime = unifiedPlayer.getCurrentTime();
+          const playerState = unifiedPlayer.getPlayerState();
+          const isPaused = playerState === 2 || playerState === -1;
+
+          try {
+            await fetch(`/api/room/${roomId}/update`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                currentTimestamp: currentTime,
+                isPaused: isPaused,
+                sessionId: sessionId,
+                videoId: roomStatus?.videoId,
+              }),
+            });
+          } catch (e) {}
+        }
       } else {
         try {
           const response = await fetch(`/api/room/${roomId}/status`);
@@ -370,18 +392,32 @@ export default function Room() {
             const status: RoomStatus = await response.json();
             setRoomStatus(status);
 
-            const localTime = unifiedPlayer.getCurrentTime();
-            const timeDiff = Math.abs(localTime - status.currentTimestamp);
-
-            const playerState = unifiedPlayer.getPlayerState();
-            if (status.isPaused && playerState === 1) {
-              unifiedPlayer.pauseVideo();
-            } else if (!status.isPaused && (playerState === 2 || playerState === -1)) {
-              unifiedPlayer.playVideo();
+            let isPlayerVideoMatching = true;
+            if (!isDrive && playerRef.current) {
+              if (typeof playerRef.current.getVideoData === "function") {
+                const currentVideoData = playerRef.current.getVideoData();
+                if (!currentVideoData || !currentVideoData.video_id || currentVideoData.video_id !== actualVideoId) {
+                  isPlayerVideoMatching = false;
+                }
+              } else {
+                isPlayerVideoMatching = false;
+              }
             }
 
-            if (timeDiff > 2.0) {
-              unifiedPlayer.seekTo(status.currentTimestamp, true);
+            if (isPlayerVideoMatching) {
+              const localTime = unifiedPlayer.getCurrentTime();
+              const timeDiff = Math.abs(localTime - status.currentTimestamp);
+
+              const playerState = unifiedPlayer.getPlayerState();
+              if (status.isPaused && playerState === 1) {
+                unifiedPlayer.pauseVideo();
+              } else if (!status.isPaused && (playerState === 2 || playerState === -1)) {
+                unifiedPlayer.playVideo();
+              }
+
+              if (timeDiff > 2.0) {
+                unifiedPlayer.seekTo(status.currentTimestamp, true);
+              }
             }
           }
         } catch (e) {}
@@ -399,7 +435,7 @@ export default function Room() {
     return () => {
       if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     };
-  }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId]);
+  }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId, actualVideoId]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -587,7 +623,7 @@ export default function Room() {
                  <form onSubmit={handleNextVideoSubmit} className="space-y-4">
                    <input 
                      type="text" 
-                     placeholder="Paste next YouTube URL..."
+                     placeholder="Place the next link..."
                      className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/10 text-sm text-white focus:border-[#9d4edd] outline-none transition-colors"
                      value={nextVideoUrl}
                      onChange={(e) => setNextVideoUrl(e.target.value)}
