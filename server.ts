@@ -32,7 +32,8 @@ async function startServer() {
       scheduled_at TEXT,
       is_lobby_enabled INTEGER DEFAULT 0,
       only_host_sync INTEGER DEFAULT 0,
-      break_end_timestamp REAL
+      break_end_timestamp REAL,
+      video_queue TEXT DEFAULT '[]'
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -109,6 +110,12 @@ async function startServer() {
     db.prepare("SELECT break_end_timestamp FROM rooms LIMIT 1").get();
   } catch (e) {
     db.exec("ALTER TABLE rooms ADD COLUMN break_end_timestamp REAL;");
+  }
+
+  try {
+    db.prepare("SELECT video_queue FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN video_queue TEXT DEFAULT '[]';");
   }
 
   app.get("/api/health", (req, res) => {
@@ -221,10 +228,10 @@ async function startServer() {
       existing.isBuffering = !!isBuffering;
     }
 
-    // Process expired heartbeats (users not seen in the last 30 seconds)
+    // Process expired heartbeats (users not seen in the last 120 seconds)
     const deadSessionIds: string[] = [];
     presenceMap.forEach((user, sessId) => {
-      if (now - user.lastSeen > 30000) {
+      if (now - user.lastSeen > 120000) {
         deadSessionIds.push(sessId);
       }
     });
@@ -233,12 +240,6 @@ async function startServer() {
       const deadUser = presenceMap!.get(sessId);
       if (deadUser) {
         presenceMap!.delete(sessId);
-        try {
-          const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
-          stmt.run(roomId, "System", `${deadUser.username} has left the room`);
-        } catch (err) {
-          console.error("Failed to insert system message for timeout leave:", err);
-        }
       }
     });
 
@@ -683,7 +684,8 @@ async function startServer() {
         scheduledAt: room.scheduled_at,
         isLobbyEnabled: room.is_lobby_enabled === 1,
         onlyHostSync: room.only_host_sync === 1,
-        breakEndTime: room.break_end_timestamp
+        breakEndTime: room.break_end_timestamp,
+        videoQueue: JSON.parse(room.video_queue || "[]")
       });
     } catch (err) {
       console.error(`Database error fetching room ${roomId}`, err);
@@ -807,6 +809,122 @@ async function startServer() {
       res.json({ success: true, videoId });
     } catch (err) {
       res.status(500).json({ error: "Failed to change video" });
+    }
+  });
+
+  // Queue Video / Play Next
+  app.post("/api/room/:roomId/queue/add", async (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { videoUrl, sessionId, playNext } = req.body;
+
+    const videoId = parseVideoUrl(videoUrl);
+    if (!videoId) {
+      return res.status(400).json({ error: "Invalid YouTube or Google Drive URL." });
+    }
+
+    try {
+      const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
+      const room = stmt.get(roomId);
+      if (!room) {
+        return res.status(404).json({ error: "Room not found" });
+      }
+
+      if (room.host_session_id !== sessionId && room.only_host_sync === 1) {
+        return res.status(403).json({ error: "Unauthorized. Playback controls restricted to host." });
+      }
+
+      const queue = JSON.parse(room.video_queue || "[]");
+      const item = { id: videoId, url: videoUrl, addedAt: Date.now() };
+      
+      if (playNext) {
+        queue.unshift(item);
+      } else {
+        queue.push(item);
+      }
+
+      const updateStmt = db.prepare("UPDATE rooms SET video_queue = ? WHERE room_id = ?");
+      updateStmt.run(JSON.stringify(queue), roomId);
+
+      // Insert system message notifying the chat
+      try {
+        const msgStmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, 'System', ?)");
+        const isDrive = videoId.startsWith("drive:");
+        const nameType = isDrive ? "Google Drive Track" : "YouTube Video";
+        const prefix = playNext ? "Play Next Registered" : "Queued";
+        msgStmt.run(roomId, `${prefix}: ${nameType} (${videoUrl})`);
+      } catch (err) {
+        console.error("Failed to post system message for queue add:", err);
+      }
+
+      res.json({ success: true, videoQueue: queue });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to add to queue" });
+    }
+  });
+
+  // Skip / Play Next from Queue
+  app.post("/api/room/:roomId/queue/next", async (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { sessionId } = req.body;
+
+    try {
+      const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
+      const room = stmt.get(roomId);
+      if (!room) {
+        return res.status(404).json({ error: "Room not found" });
+      }
+
+      if (room.host_session_id !== sessionId && room.only_host_sync === 1) {
+        return res.status(403).json({ error: "Unauthorized. Playback controls restricted to host." });
+      }
+
+      const queue = JSON.parse(room.video_queue || "[]");
+      if (queue.length === 0) {
+        return res.status(400).json({ error: "Queue is empty" });
+      }
+
+      const nextVideo = queue.shift();
+
+      const updateStmt = db.prepare(`
+        UPDATE rooms 
+        SET video_id = ?, current_timestamp = 0, is_paused = 1, break_end_timestamp = NULL, video_queue = ? 
+        WHERE room_id = ?
+      `);
+      updateStmt.run(nextVideo.id, JSON.stringify(queue), roomId);
+
+      try {
+        const msgStmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, 'System', ?)");
+        msgStmt.run(roomId, `Now playing from queue: ${nextVideo.url}`);
+      } catch (err) {}
+
+      res.json({ success: true, videoId: nextVideo.id, videoQueue: queue });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to skip to next video" });
+    }
+  });
+
+  // Update whole queue (Reorder or Remove)
+  app.post("/api/room/:roomId/queue/update", async (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { videoQueue, sessionId } = req.body;
+
+    try {
+      const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
+      const room = stmt.get(roomId);
+      if (!room) {
+        return res.status(404).json({ error: "Room not found" });
+      }
+
+      if (room.host_session_id !== sessionId && room.only_host_sync === 1) {
+        return res.status(403).json({ error: "Unauthorized. Playback controls restricted to host." });
+      }
+
+      const updateStmt = db.prepare("UPDATE rooms SET video_queue = ? WHERE room_id = ?");
+      updateStmt.run(JSON.stringify(videoQueue), roomId);
+
+      res.json({ success: true, videoQueue });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update queue" });
     }
   });
 

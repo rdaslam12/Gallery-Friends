@@ -126,6 +126,13 @@ export default function Room() {
   const isDrive = roomStatus?.videoId?.startsWith("drive:");
   const actualVideoId = roomStatus?.videoId?.replace(/^(yt:|drive:)/, "") || roomStatus?.videoId;
 
+  const roomStatusRef = useRef(roomStatus);
+  useEffect(() => {
+    roomStatusRef.current = roomStatus;
+  }, [roomStatus]);
+
+  const handlePlayNextVideoRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     isTypingRef.current = isTyping;
   }, [isTyping]);
@@ -465,6 +472,26 @@ export default function Room() {
     };
   }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId, actualVideoId, username, isBufferingState]);
 
+  // Handle explicit leaving when unmounting or before tab close/unload
+  useEffect(() => {
+    const handleLeaveRoom = () => {
+      if (roomId && sessionId) {
+        fetch(`/api/room/${roomId}/leave`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+          keepalive: true
+        }).catch(() => {});
+      }
+    };
+
+    window.addEventListener("beforeunload", handleLeaveRoom);
+    return () => {
+      window.removeEventListener("beforeunload", handleLeaveRoom);
+      handleLeaveRoom();
+    };
+  }, [roomId, sessionId]);
+
   // Smooth local timeline ticking updates
   useEffect(() => {
     if (!isPlayerReady) return;
@@ -626,6 +653,11 @@ export default function Room() {
         onStateChange: (event: any) => {
           setIsPlaying(event.data === 1);
           setIsBufferingState(event.data === 3);
+          if (event.data === 0 && isHost) {
+            if (roomStatusRef.current?.videoQueue && roomStatusRef.current.videoQueue.length > 0) {
+              handlePlayNextVideoRef.current?.();
+            }
+          }
         }
       }
     });
@@ -882,6 +914,74 @@ export default function Room() {
     } catch (error) {}
   };
 
+  const handleAddToQueue = async (playNext = false) => {
+    if (!nextVideoUrl || !isHost) return;
+    try {
+      const response = await fetch(`/api/room/${roomId}/queue/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl: nextVideoUrl, sessionId, playNext }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.videoQueue) {
+          setRoomStatus(prev => prev ? { ...prev, videoQueue: data.videoQueue } : null);
+        }
+        setNextVideoUrl("");
+      }
+    } catch (e) {
+      console.error("Queue add error", e);
+    }
+  };
+
+  const handlePlayNextVideo = async () => {
+    if (!isHost || !roomStatus?.videoQueue || roomStatus.videoQueue.length === 0) return;
+    try {
+      const response = await fetch(`/api/room/${roomId}/queue/next`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setRoomStatus(prev => prev ? {
+          ...prev,
+          videoId: data.videoId,
+          currentTimestamp: 0,
+          isPaused: true,
+          videoQueue: data.videoQueue
+        } : null);
+        setResolvedDriveUrl(data.videoId.startsWith("drive:") ? `/api/proxy-video/${data.videoId.replace("drive:", "")}` : null);
+      }
+    } catch (e) {
+      console.error("Play next error", e);
+    }
+  };
+
+  const handleRemoveFromQueue = async (index: number) => {
+    if (!isHost || !roomStatus?.videoQueue) return;
+    try {
+      const updatedQueue = [...roomStatus.videoQueue];
+      updatedQueue.splice(index, 1);
+      
+      const response = await fetch(`/api/room/${roomId}/queue/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoQueue: updatedQueue, sessionId }),
+      });
+      
+      if (response.ok) {
+        setRoomStatus(prev => prev ? { ...prev, videoQueue: updatedQueue } : null);
+      }
+    } catch (e) {
+      console.error("Queue remove error", e);
+    }
+  };
+
+  useEffect(() => {
+    handlePlayNextVideoRef.current = handlePlayNextVideo;
+  }, [roomStatus?.videoQueue, isHost]);
+
   const uiOpacityClass = isUserActive ? "opacity-100" : "opacity-0 pointer-events-none";
 
   // Compute breakdown active
@@ -930,7 +1030,7 @@ export default function Room() {
       
       {/* 1. Live View Mode: Roster Panel on Left (240px wide) */}
       {viewMode === "live" && (
-        <div className="w-full sm:w-60 bg-[#070707] border-b sm:border-b-0 sm:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5">
+        <div className="w-full sm:w-60 bg-[#070707] border-b sm:border-b-0 sm:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5 order-1 sm:order-1">
            <div className="flex items-center gap-2 mb-2 border-b border-white/5 pb-3">
              <Users className="w-4 h-4 text-[#9d4edd]" />
              <span className="text-[10px] font-mono tracking-widest text-white/70 uppercase">Roster Mesh</span>
@@ -980,7 +1080,7 @@ export default function Room() {
       <div className={`${
         viewMode === "cinema" 
           ? "absolute inset-0 w-full h-full z-0 p-0 bg-black flex flex-col justify-center min-h-0 min-w-0" 
-          : "flex-1 relative flex flex-col justify-center bg-black min-h-0 min-w-0 p-2 md:p-4"
+          : "flex-1 relative flex flex-col justify-center bg-black min-h-0 min-w-0 p-2 md:p-4 order-2 sm:order-2"
       }`}>
         
         {/* Dynamic header row options with Presets layout */}
@@ -1048,7 +1148,12 @@ export default function Room() {
               className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
               autoPlay
               onEnded={() => {
-                if (isHost) setIsUserActive(true);
+                if (isHost) {
+                  setIsUserActive(true);
+                  if (roomStatusRef.current?.videoQueue && roomStatusRef.current.videoQueue.length > 0) {
+                    handlePlayNextVideoRef.current?.();
+                  }
+                }
               }}
               onError={() => setLoadError("Could not render Drive stream track context. Enforce public access limits.")}
             >
@@ -1311,10 +1416,10 @@ export default function Room() {
           <div 
             onMouseEnter={() => setIsChatHovered(true)}
             onMouseLeave={() => setIsChatHovered(false)}
-            className={`flex shrink-0 h-[45vh] sm:h-full relative select-none text-left transition-all duration-500 ease-in-out ${
+            className={`flex shrink-0 select-none text-left transition-all duration-500 ease-in-out ${
               viewMode === "cinema" 
                 ? "absolute right-0 left-auto top-0 bottom-0 h-full w-[380px] z-50" 
-                : "z-[60]"
+                : "relative h-[45vh] sm:h-full z-[60] order-3 sm:order-3"
             } ${
               viewMode === "cinema" 
                 ? (isOverlayActive ? "opacity-100 pointer-events-auto visible" : "opacity-0 pointer-events-none invisible") 
@@ -1637,7 +1742,106 @@ export default function Room() {
               {/* C. TAB: Settings option (Host controls) */}
               {sidebarTab === "settings" && isHost && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-6 text-left">
-                  <div className="space-y-1">
+                  
+                  {/* Theatre Source & Queue Control widget */}
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-purple-400 font-mono uppercase tracking-widest block">Theatre Source Control</span>
+                      <p className="text-xs text-white/60 leading-relaxed font-sans">
+                        Load a YouTube or Google Drive video immediately, or queue it to play next.
+                      </p>
+                    </div>
+
+                    <form onSubmit={(e) => e.preventDefault()} className="space-y-2 pt-3 border-t border-white/5">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-white/40 uppercase tracking-[0.1em]">Video Link / URL</label>
+                        <input 
+                          type="text" 
+                          placeholder="Paste YouTube or Google Drive link..." 
+                          value={nextVideoUrl}
+                          onChange={(e) => setNextVideoUrl(e.target.value)}
+                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 text-xs text-white placeholder-white/30"
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={handleNextVideoSubmit}
+                          disabled={!nextVideoUrl.trim()}
+                          className="py-1.5 bg-white/5 hover:bg-white/10 border border-white/5 disabled:opacity-40 text-white font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
+                          title="Play immediately"
+                        >
+                          Load Now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAddToQueue(true)}
+                          disabled={!nextVideoUrl.trim()}
+                          className="py-1.5 bg-[#9d4edd]/20 hover:bg-[#9d4edd]/35 border border-[#9d4edd]/30 disabled:opacity-40 text-purple-200 font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
+                          title="Place at top of queue"
+                        >
+                          Play Next
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAddToQueue(false)}
+                          disabled={!nextVideoUrl.trim()}
+                          className="py-1.5 bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-40 text-white font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
+                          title="Add to end of queue"
+                        >
+                          Add Queue
+                        </button>
+                      </div>
+                    </form>
+
+                    {/* Queue Listing */}
+                    {roomStatus?.videoQueue && roomStatus.videoQueue.length > 0 && (
+                      <div className="space-y-2.5 pt-3 border-t border-white/5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-white/40 uppercase tracking-[0.1em]">
+                            Watchlist Queue ({roomStatus.videoQueue.length})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handlePlayNextVideo}
+                            className="text-[#bf8bff] hover:text-white font-mono font-bold text-[9px] uppercase tracking-wider transition-colors flex items-center gap-1"
+                          >
+                            <span>Skip to Next</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                          {roomStatus.videoQueue.map((item, idx) => {
+                            const isDriveItem = item.id.startsWith("drive:");
+                            return (
+                              <div key={`${item.id}-${idx}`} className="flex items-center justify-between p-2 bg-[#121316] border border-white/5 rounded-xl text-xs gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-[10px] text-white/30 font-mono font-bold">{idx + 1}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase shrink-0 ${isDriveItem ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30' : 'bg-red-600/20 text-red-300 border border-red-500/30'}`}>
+                                    {isDriveItem ? "Drive" : "YouTube"}
+                                  </span>
+                                  <span className="text-white/80 truncate pr-2" title={item.url}>
+                                    {item.url}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFromQueue(idx)}
+                                  className="text-red-400 hover:text-red-300 p-1 rounded-lg hover:bg-red-500/10 shrink-0 transition-colors"
+                                  title="Remove from queue"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 pt-4 border-t border-white/5">
                      <span className="text-[10px] text-white/35 font-mono uppercase tracking-widest block">Authorization Locks</span>
                      <p className="text-xs text-white/60 leading-relaxed font-sans">Adjust rules on security, breaks, and lobby.</p>
                   </div>

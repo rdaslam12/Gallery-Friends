@@ -9,6 +9,7 @@ export interface RoomStatus {
   isLobbyEnabled?: boolean;
   onlyHostSync?: boolean;
   breakEndTime?: number | null;
+  videoQueue?: { id: string; url: string; addedAt: number }[];
 }
 
 export interface ChatMessage {
