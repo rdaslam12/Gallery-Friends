@@ -85,6 +85,110 @@ async function startServer() {
     }
   });
 
+  // User presence tracking state and memory model
+  interface ActiveUser {
+    username: string;
+    lastSeen: number;
+    isTyping: boolean;
+  }
+  const roomPresence = new Map<string, Map<string, ActiveUser>>();
+
+  // Heartbeat endpoint to track user presence, typing status, and handle joins/leaves
+  app.post("/api/room/:roomId/heartbeat", (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { username, sessionId, isTyping } = req.body;
+
+    if (!username || !sessionId) {
+      return res.status(400).json({ error: "Missing username or sessionId" });
+    }
+
+    let presenceMap = roomPresence.get(roomId);
+    if (!presenceMap) {
+      presenceMap = new Map();
+      roomPresence.set(roomId, presenceMap);
+    }
+
+    const now = Date.now();
+    const existing = presenceMap.get(sessionId);
+
+    if (!existing) {
+      presenceMap.set(sessionId, {
+        username,
+        lastSeen: now,
+        isTyping: !!isTyping
+      });
+
+      // Insert "user entered the room" system message
+      try {
+        const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+        stmt.run(roomId, "System", `${username} entered the room`);
+      } catch (err) {
+        console.error("Failed to insert system message for join:", err);
+      }
+    } else {
+      existing.username = username;
+      existing.lastSeen = now;
+      existing.isTyping = !!isTyping;
+    }
+
+    // Process expired heartbeats (users not seen in the last 4.5 seconds)
+    const deadSessionIds: string[] = [];
+    presenceMap.forEach((user, sessId) => {
+      if (now - user.lastSeen > 4500) {
+        deadSessionIds.push(sessId);
+      }
+    });
+
+    deadSessionIds.forEach((sessId) => {
+      const deadUser = presenceMap!.get(sessId);
+      if (deadUser) {
+        presenceMap!.delete(sessId);
+        try {
+          const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+          stmt.run(roomId, "System", `${deadUser.username} has left the room`);
+        } catch (err) {
+          console.error("Failed to insert system message for timeout leave:", err);
+        }
+      }
+    });
+
+    // Collate other users currently typing (excluding self, active in the last 4.5s)
+    const typingUsers: string[] = [];
+    presenceMap.forEach((user, sessId) => {
+      if (sessId !== sessionId && user.isTyping && (now - user.lastSeen < 4500)) {
+        typingUsers.push(user.username);
+      }
+    });
+
+    res.json({ success: true, typingUsers });
+  });
+
+  // Explicitly leaving a room (useful for window beforeunload / unmount)
+  app.post("/api/room/:roomId/leave", (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Missing sessionId" });
+    }
+
+    const presenceMap = roomPresence.get(roomId);
+    if (presenceMap) {
+      const user = presenceMap.get(sessionId);
+      if (user) {
+        presenceMap.delete(sessionId);
+        try {
+          const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+          stmt.run(roomId, "System", `${user.username} has left the room`);
+        } catch (err) {
+          console.error("Failed to insert system message for leave route:", err);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  });
+
   // Helper for unique Room ID
   function generateRoomId() {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed ambiguous chars like 1, I, 0, O
@@ -241,6 +345,121 @@ async function startServer() {
     } catch (err) {
       console.error("Error resolving Google Drive URL:", err);
       res.json({ url: `https://drive.google.com/uc?export=download&id=${fileId}` });
+    }
+  });
+
+  // Google Drive subtitle list fetcher
+  app.get("/api/drive-subtitles-list/:fileId", async (req, res) => {
+    const fileId = req.params.fileId;
+    try {
+      const url = `https://video.google.com/timedtext?v=${fileId}&type=list`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        return res.json({ success: false, tracks: [] });
+      }
+      const xml = await response.text();
+      
+      const trackMatches = xml.match(/<track\s+[^>]+>/g) || [];
+      const tracks = trackMatches.map((trackStr) => {
+        const langCodeMatch = trackStr.match(/lang_code="([^"]+)"/);
+        const nameMatch = trackStr.match(/name="([^"]*)"/);
+        const langOriginalMatch = trackStr.match(/lang_original="([^"]*)"/);
+        
+        if (langCodeMatch) {
+          return {
+            lang: langCodeMatch[1],
+            name: nameMatch ? nameMatch[1] : "",
+            label: langOriginalMatch ? langOriginalMatch[1] : langCodeMatch[1]
+          };
+        }
+        return null;
+      }).filter((t): t is { lang: string; name: string; label: string } => t !== null);
+
+      res.json({ success: true, tracks });
+    } catch (err: any) {
+      console.error("Error fetching drive subtitles list:", err);
+      res.json({ success: false, tracks: [] });
+    }
+  });
+
+  // Google Drive timedtext XML to WebVTT downloader & parser
+  app.get("/api/drive-subtitles/:fileId/:lang", async (req, res) => {
+    const { fileId, lang } = req.params;
+    const name = req.query.name || "";
+    try {
+      // First try to fetch the timedtext API directly
+      const url = `https://video.google.com/timedtext?v=${fileId}&lang=${lang}&name=${encodeURIComponent(name as string)}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        return res.status(404).send("Subtitles not found");
+      }
+      const xml = await response.text();
+      
+      if (xml.includes("<text")) {
+        const textMatches = xml.match(/<text\s+[^>]+>[^<]*/g) || [];
+        const cues: { start: number, end: number, text: string }[] = [];
+        
+        for (const textStr of textMatches) {
+          const startMatch = textStr.match(/start="([\d.]+)"/);
+          const durMatch = textStr.match(/dur="([\d.]+)"/);
+          const contentMatch = textStr.match(/>([^<]*)/);
+          
+          if (startMatch) {
+            const start = parseFloat(startMatch[1]);
+            const dur = durMatch ? parseFloat(durMatch[1]) : 0;
+            const text = contentMatch ? contentMatch[1] : "";
+            
+            // decode HTML/XML entities
+            const decodedText = text
+              .replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'")
+              .replace(/&apos;/g, "'");
+
+            cues.push({
+              start,
+              end: start + dur,
+              text: decodedText
+            });
+          }
+        }
+        
+        // Assemble WebVTT format
+        let vtt = "WEBVTT\n\n";
+        const formatVttTime = (seconds: number): string => {
+          const h = Math.floor(seconds / 3600);
+          const m = Math.floor((seconds % 3600) / 60);
+          const s = Math.floor(seconds % 60);
+          const ms = Math.floor((seconds % 1) * 1000);
+          
+          const pad = (n: number, size = 2) => String(n).padStart(size, "0");
+          return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
+        };
+        
+        cues.forEach((cue, index) => {
+          vtt += `${index + 1}\n`;
+          vtt += `${formatVttTime(cue.start)} --> ${formatVttTime(cue.end)}\n`;
+          vtt += `${cue.text}\n\n`;
+        });
+        
+        res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+        res.send(vtt);
+      } else {
+        // Fallback to requesting Google's native auto-vtt parameter if available
+        const directVttUrl = `https://video.google.com/timedtext?v=${fileId}&lang=${lang}&name=${encodeURIComponent(name as string)}&fmt=vtt`;
+        const vttResponse = await fetch(directVttUrl);
+        if (vttResponse.ok) {
+          const vttText = await vttResponse.text();
+          res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+          return res.send(vttText);
+        }
+        res.status(404).send("Subtitles format empty");
+      }
+    } catch (err: any) {
+      console.error("Error downloading drive subtitle track:", err);
+      res.status(500).send("Error converting subtitles");
     }
   });
 

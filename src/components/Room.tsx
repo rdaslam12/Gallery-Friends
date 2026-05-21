@@ -38,6 +38,17 @@ export default function Room() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(document.fullscreenElement !== null);
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
+  const [driveSubtitleTracks, setDriveSubtitleTracks] = useState<{ lang: string; name: string; label: string }[]>([]);
+  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const isTypingRef = useRef(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    isTypingRef.current = isTyping;
+  }, [isTyping]);
 
   const playerRef = useRef<any>(null);
   const html5VideoRef = useRef<HTMLVideoElement>(null);
@@ -141,6 +152,30 @@ export default function Room() {
       }
     }
   }, [username, navigate, roomId]);
+
+  // Clean presence on browser closed, tab unloaded or route navigated away
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (roomId && sessionId) {
+        navigator.sendBeacon(
+          `/api/room/${roomId}/leave`,
+          JSON.stringify({ sessionId })
+        );
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      if (roomId && sessionId) {
+        fetch(`/api/room/${roomId}/leave`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId })
+        }).catch(() => {});
+      }
+    };
+  }, [roomId, sessionId]);
 
   // Handle User Activity for Auto-Hide UI
   useEffect(() => {
@@ -337,7 +372,24 @@ export default function Room() {
   // Clear subtitles and trigger video updates when video changes
   useEffect(() => {
     setSubtitleUrl(null);
-  }, [actualVideoId]);
+    setDriveSubtitleTracks([]);
+    if (isDrive && actualVideoId) {
+      fetch(`/api/drive-subtitles-list/${actualVideoId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.tracks && data.tracks.length > 0) {
+            setDriveSubtitleTracks(data.tracks);
+            // Auto load English or the first available track
+            const defaultTrack = data.tracks.find((t: any) => t.lang.toLowerCase().startsWith("en")) || data.tracks[0];
+            if (defaultTrack) {
+              const url = `/api/drive-subtitles/${actualVideoId}/${defaultTrack.lang}?name=${encodeURIComponent(defaultTrack.name)}`;
+              setSubtitleUrl(url);
+            }
+          }
+        })
+        .catch((err) => console.error("Error auto-loading Google Drive subtitle list:", err));
+    }
+  }, [actualVideoId, isDrive]);
 
   // Trigger HTML5 video load/play when source changes
   useEffect(() => {
@@ -430,16 +482,54 @@ export default function Room() {
           setMessages(newMessages);
         }
       } catch (e) {}
+
+      if (username) {
+        try {
+          const hbResponse = await fetch(`/api/room/${roomId}/heartbeat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username,
+              sessionId,
+              isTyping: isTypingRef.current,
+            }),
+          });
+          if (hbResponse.ok) {
+            const hbData = await hbResponse.json();
+            if (hbData.success && hbData.typingUsers) {
+              setTypingUsers(hbData.typingUsers);
+            }
+          }
+        } catch (e) {}
+      }
     }, 1500);
 
     return () => {
       if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     };
-  }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId, actualVideoId]);
+  }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId, actualVideoId, username]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value);
+    if (!isTyping) {
+      setIsTyping(true);
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+    }, 2000);
+  };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !username) return;
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    setIsTyping(false);
 
     try {
       await fetch(`/api/room/${roomId}/messages`, {
@@ -534,7 +624,7 @@ export default function Room() {
               }}
               onError={(e) => setLoadError("Failed to load Google Drive video. Ensure link is public.")}
             >
-              {subtitleUrl && <track kind="subtitles" src={subtitleUrl} srcLang="en" label="Local Subtitles" default />}
+              {subtitleUrl && <track key={subtitleUrl} kind="subtitles" src={subtitleUrl} srcLang="en" label="Subtitles" default />}
             </video>
           )}
         </div>
@@ -578,7 +668,7 @@ export default function Room() {
                 <LogOut className="w-3 h-3" />
               </button>
               {isDrive && (
-                <>
+                <div className="relative">
                   <input 
                     type="file" 
                     accept=".srt,.vtt"
@@ -587,13 +677,94 @@ export default function Room() {
                     className="hidden" 
                   />
                   <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`w-6 h-6 rounded-full ${subtitleUrl ? 'bg-[#9d4edd]/50 text-white border-[#9d4edd]' : 'bg-white/10 text-white hover:bg-white/20 border-white/10'} backdrop-blur-md border flex items-center justify-center transition-colors`}
-                    title="Load Subtitles"
+                    onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                    className={`w-6 h-6 rounded-full hover:scale-105 active:scale-95 transition-all ${subtitleUrl ? 'bg-[#9d4edd]/50 text-white border-[#9d4edd]' : 'bg-white/10 text-white hover:bg-white/20 border-white/10'} backdrop-blur-md border flex items-center justify-center transition-colors`}
+                    title="Subtitle Settings"
                   >
                     <Subtitles className="w-3 h-3" />
                   </button>
-                </>
+
+                  <AnimatePresence>
+                    {showSubtitleMenu && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                        className="absolute right-0 mt-2 w-56 bg-black/95 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl z-50 text-xs text-white"
+                      >
+                        <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-2 font-semibold">
+                          <span>Subtitles</span>
+                          <button 
+                            onClick={() => setShowSubtitleMenu(false)}
+                            className="text-white/60 hover:text-white"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {/* List source options */}
+                        <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                          {driveSubtitleTracks.length > 0 ? (
+                            <>
+                              <div className="text-[9px] text-white/40 uppercase tracking-wider px-1 font-mono mb-1">
+                                Google Drive Captions
+                              </div>
+                              {driveSubtitleTracks.map((track) => {
+                                const isSelected = subtitleUrl?.includes(`/api/drive-subtitles/${actualVideoId}/${track.lang}`);
+                                return (
+                                  <button
+                                    key={`${track.lang}-${track.name}`}
+                                    onClick={() => {
+                                      const url = `/api/drive-subtitles/${actualVideoId}/${track.lang}?name=${encodeURIComponent(track.name)}`;
+                                      setSubtitleUrl(url);
+                                      setShowSubtitleMenu(false);
+                                    }}
+                                    className={`w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between ${isSelected ? 'bg-[#9d4edd]/30 text-[#e1b1ff]' : 'hover:bg-white/5 text-white/80 hover:text-white'}`}
+                                  >
+                                    <span className="truncate">{track.label} {track.name ? `(${track.name})` : ''}</span>
+                                    {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-[#9d4edd]" />}
+                                  </button>
+                                );
+                              })}
+                            </>
+                          ) : (
+                            <div className="text-white/40 text-[10px] py-1 text-center font-mono">
+                              No Drive Captions Detected
+                            </div>
+                          )}
+                          
+                          <div className="border-t border-white/10 my-2 pt-2" />
+
+                          <div className="text-[9px] text-white/40 uppercase tracking-wider px-1 font-mono mb-1">
+                            Options
+                          </div>
+                          
+                          <button
+                            onClick={() => {
+                              fileInputRef.current?.click();
+                              setShowSubtitleMenu(false);
+                            }}
+                            className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-white/5 text-white/80 hover:text-white transition-colors"
+                          >
+                            Upload Custom Track (.srt/.vtt)
+                          </button>
+
+                          {subtitleUrl && (
+                            <button
+                              onClick={() => {
+                                setSubtitleUrl(null);
+                                setShowSubtitleMenu(false);
+                              }}
+                              className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-red-500/20 text-red-400 font-semibold transition-colors mt-1"
+                            >
+                              Turn Off Subtitles
+                            </button>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
               <button
                 onClick={toggleFullscreen}
@@ -722,6 +893,15 @@ export default function Room() {
               style={{ maskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to top, black 80%, transparent)' : 'none', WebkitMaskImage: isEffectiveChatOverlayMode ? 'linear-gradient(to bottom, transparent, black 20%, black 90%, transparent)' : 'none' }}
             >
                {messages.filter(m => !m.message_text?.startsWith("[EMOJI]:")).map((msg) => {
+                   if (msg.username === "System") {
+                     return (
+                       <div key={msg.id} className="w-full text-center py-1.5 my-1 text-xs text-white/40 italic font-medium tracking-wide flex items-center justify-center gap-3">
+                         <span className="h-[1px] flex-1 bg-white/5 max-w-[24px]" />
+                         <span>{msg.message_text}</span>
+                         <span className="h-[1px] flex-1 bg-white/5 max-w-[24px]" />
+                       </div>
+                     );
+                   }
                   const replyMsg = msg.reply_to_id ? messages.find(m => m.id === msg.reply_to_id) : null;
                   const isMe = msg.username === username;
                   const isRightAligned = !isEffectiveChatOverlayMode && isMe;
@@ -748,7 +928,19 @@ export default function Room() {
                     </button>
                   </div>
                )})}
-               <div ref={chatEndRef} />
+               {typingUsers.length > 0 && (
+                  <div className="flex items-center gap-2 px-1 py-1 text-xs text-white/50 italic mr-auto">
+                    <div className="flex gap-1 items-center bg-white/5 border border-white/5 px-2.5 py-1.5 rounded-2xl rounded-tl-sm backdrop-blur-sm">
+                      <span className="w-1.5 h-1.5 bg-[#9d4edd] rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                      <span className="w-1.5 h-1.5 bg-[#9d4edd] rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                      <span className="w-1.5 h-1.5 bg-[#9d4edd] rounded-full animate-bounce"></span>
+                    </div>
+                    <span className="text-[10px] tracking-wide text-white/40">
+                      {typingUsers.join(", ")} {typingUsers.length === 1 ? "is" : "are"} typing...
+                    </span>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
             </div>
 
             {/* Scroll down indicator */}
@@ -791,7 +983,7 @@ export default function Room() {
                     className={`w-full pl-4 pr-12 py-3 bg-white/10 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 transition-all text-sm text-white ${isEffectiveChatOverlayMode ? "backdrop-blur-md shadow-xl" : ""}`}
                     placeholder="Message..."
                     value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
+                    onChange={handleInputChange}
                   />
                   <button
                     type="submit"
