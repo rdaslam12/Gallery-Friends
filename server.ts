@@ -26,7 +26,13 @@ async function startServer() {
       video_id TEXT,
       current_timestamp REAL DEFAULT 0,
       is_paused INTEGER DEFAULT 1,
-      host_session_id TEXT
+      host_session_id TEXT,
+      room_type TEXT DEFAULT 'EPHEMERAL',
+      name TEXT,
+      scheduled_at TEXT,
+      is_lobby_enabled INTEGER DEFAULT 0,
+      only_host_sync INTEGER DEFAULT 0,
+      break_end_timestamp REAL
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -42,12 +48,67 @@ async function startServer() {
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_recent_rooms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT,
+      room_id TEXT,
+      video_id TEXT,
+      last_timestamp REAL DEFAULT 0,
+      last_visited DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(username, room_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id INTEGER,
+      username TEXT,
+      emoji TEXT,
+      UNIQUE(message_id, username)
+    );
   `);
 
+  // Schema alterations for seamless backward-compatibility upgrades
   try {
     db.prepare("SELECT reply_to_id FROM messages LIMIT 1").get();
   } catch (e) {
     db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER;");
+  }
+
+  try {
+    db.prepare("SELECT room_type FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN room_type TEXT DEFAULT 'EPHEMERAL';");
+  }
+
+  try {
+    db.prepare("SELECT name FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN name TEXT;");
+  }
+
+  try {
+    db.prepare("SELECT scheduled_at FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN scheduled_at TEXT;");
+  }
+
+  try {
+    db.prepare("SELECT is_lobby_enabled FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN is_lobby_enabled INTEGER DEFAULT 0;");
+  }
+
+  try {
+    db.prepare("SELECT only_host_sync FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN only_host_sync INTEGER DEFAULT 0;");
+  }
+
+  try {
+    db.prepare("SELECT break_end_timestamp FROM rooms LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE rooms ADD COLUMN break_end_timestamp REAL;");
   }
 
   app.get("/api/health", (req, res) => {
@@ -87,16 +148,21 @@ async function startServer() {
 
   // User presence tracking state and memory model
   interface ActiveUser {
+    sessionId: string;
     username: string;
     lastSeen: number;
     isTyping: boolean;
+    isBuffering: boolean;
+    isMuted: boolean;
+    isKicked: boolean;
+    status: "waiting" | "approved";
   }
   const roomPresence = new Map<string, Map<string, ActiveUser>>();
 
-  // Heartbeat endpoint to track user presence, typing status, and handle joins/leaves
+  // Heartbeat endpoint to track user presence, typing status, buffering state, and handle lobby/kicks
   app.post("/api/room/:roomId/heartbeat", (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { username, sessionId, isTyping } = req.body;
+    const { username, sessionId, isTyping, isBuffering } = req.body;
 
     if (!username || !sessionId) {
       return res.status(400).json({ error: "Missing username or sessionId" });
@@ -111,11 +177,34 @@ async function startServer() {
     const now = Date.now();
     const existing = presenceMap.get(sessionId);
 
+    // If kicked, fast-fail the guest client
+    if (existing && existing.isKicked) {
+      return res.json({ success: true, kicked: true });
+    }
+
     if (!existing) {
+      // Check if lobby is enabled in this room
+      let initialStatus: "waiting" | "approved" = "approved";
+      try {
+        const room = db.prepare("SELECT * FROM rooms WHERE room_id = ?").get(roomId);
+        if (room) {
+          if (room.is_lobby_enabled === 1 && room.host_session_id !== sessionId) {
+            initialStatus = "waiting";
+          }
+        }
+      } catch (err) {
+        console.error("Lobby check failed:", err);
+      }
+
       presenceMap.set(sessionId, {
+        sessionId,
         username,
         lastSeen: now,
-        isTyping: !!isTyping
+        isTyping: !!isTyping,
+        isBuffering: !!isBuffering,
+        isMuted: false,
+        isKicked: false,
+        status: initialStatus
       });
 
       // Insert "user entered the room" system message
@@ -129,6 +218,7 @@ async function startServer() {
       existing.username = username;
       existing.lastSeen = now;
       existing.isTyping = !!isTyping;
+      existing.isBuffering = !!isBuffering;
     }
 
     // Process expired heartbeats (users not seen in the last 4.5 seconds)
@@ -152,6 +242,19 @@ async function startServer() {
       }
     });
 
+    // Collate details of other active users for the participant roster
+    const activeUsersList: any[] = [];
+    presenceMap.forEach((user) => {
+      activeUsersList.push({
+        sessionId: user.sessionId,
+        username: user.username,
+        isTyping: user.isTyping,
+        isBuffering: user.isBuffering,
+        isMuted: user.isMuted,
+        status: user.status
+      });
+    });
+
     // Collate other users currently typing (excluding self, active in the last 4.5s)
     const typingUsers: string[] = [];
     presenceMap.forEach((user, sessId) => {
@@ -160,7 +263,65 @@ async function startServer() {
       }
     });
 
-    res.json({ success: true, typingUsers });
+    res.json({ 
+      success: true, 
+      typingUsers, 
+      activeUsers: activeUsersList,
+      isMuted: existing ? existing.isMuted : false,
+      status: existing ? existing.status : "approved"
+    });
+  });
+
+  // Host moderation actions: approve, mute, kick, etc.
+  app.post("/api/room/:roomId/moderation", (req, res) => {
+    const roomId = req.params.roomId.trim().toUpperCase();
+    const { sessionId, targetSessionId, action } = req.body;
+
+    try {
+      const room = db.prepare("SELECT * FROM rooms WHERE room_id = ?").get(roomId);
+      if (!room) {
+        return res.status(404).json({ error: "Room not found" });
+      }
+
+      // Check if self is the host of this session
+      if (room.host_session_id !== sessionId) {
+        return res.status(403).json({ error: "Unauthorized. Host authority required." });
+      }
+
+      const presenceMap = roomPresence.get(roomId);
+      if (!presenceMap) {
+        return res.status(404).json({ error: "No active users in presence registry" });
+      }
+
+      const targetUser = presenceMap.get(targetSessionId);
+      if (!targetUser) {
+        return res.status(404).json({ error: "Target participant sessions not found" });
+      }
+
+      if (action === "mute") {
+        targetUser.isMuted = true;
+      } else if (action === "unmute") {
+        targetUser.isMuted = false;
+      } else if (action === "kick") {
+        targetUser.isKicked = true;
+        presenceMap.delete(targetSessionId);
+        // Add kick log message
+        const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+        stmt.run(roomId, "System", `${targetUser.username} was kicked by the host`);
+      } else if (action === "approve") {
+        targetUser.status = "approved";
+        // Log entry approval
+        const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+        stmt.run(roomId, "System", `${targetUser.username} registered with entry approval`);
+      } else if (action === "deny") {
+        targetUser.isKicked = true;
+        presenceMap.delete(targetSessionId);
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Explicitly leaving a room (useful for window beforeunload / unmount)
@@ -463,9 +624,9 @@ async function startServer() {
     }
   });
 
-  // Create Room
+  // Create Room with advanced configurations
   app.post("/api/create-room", async (req, res) => {
-    const { videoUrl, hostSessionId } = req.body;
+    const { videoUrl, hostSessionId, roomType, name, scheduledAt, onlyHostSync, isLobbyEnabled } = req.body;
     console.log(`Room creation requested for URL: ${videoUrl}`);
     
     const videoId = parseVideoUrl(videoUrl);
@@ -478,9 +639,22 @@ async function startServer() {
     const roomId = generateRoomId();
     
     try {
-      const stmt = db.prepare("INSERT INTO rooms (room_id, video_id, is_paused, host_session_id) VALUES (?, ?, ?, ?)");
-      stmt.run(roomId, videoId, 1, hostSessionId);
-      console.log(`Room created: ${roomId} (Video: ${videoId})`);
+      const stmt = db.prepare(`
+        INSERT INTO rooms (room_id, video_id, is_paused, host_session_id, room_type, name, scheduled_at, only_host_sync, is_lobby_enabled) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        roomId, 
+        videoId, 
+        1, 
+        hostSessionId, 
+        roomType || "EPHEMERAL", 
+        name || `Room ${roomId}`, 
+        scheduledAt || null, 
+        onlyHostSync ? 1 : 0, 
+        isLobbyEnabled ? 1 : 0
+      );
+      console.log(`Room created: ${roomId} (Type: ${roomType}, Video: ${videoId})`);
       res.json({ roomId });
     } catch (err) {
       console.error("Database error creating room", err);
@@ -488,7 +662,7 @@ async function startServer() {
     }
   });
 
-  // Get Room Status
+  // Get Room Status including scheduling, permissions, breaks, etc.
   app.get("/api/room/:roomId/status", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
     try {
@@ -503,7 +677,13 @@ async function startServer() {
         videoId: room.video_id,
         currentTimestamp: room.current_timestamp,
         isPaused: room.is_paused === 1,
-        hostSessionId: room.host_session_id
+        hostSessionId: room.host_session_id,
+        roomType: room.room_type,
+        name: room.name,
+        scheduledAt: room.scheduled_at,
+        isLobbyEnabled: room.is_lobby_enabled === 1,
+        onlyHostSync: room.only_host_sync === 1,
+        breakEndTime: room.break_end_timestamp
       });
     } catch (err) {
       console.error(`Database error fetching room ${roomId}`, err);
@@ -511,10 +691,21 @@ async function startServer() {
     }
   });
 
-  // Update Room Status (Host Only usually, but we check session IDs)
+  // Update Room Status & host settings
   app.post("/api/room/:roomId/update", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { currentTimestamp, isPaused, sessionId, videoId } = req.body;
+    const { 
+      currentTimestamp, 
+      isPaused, 
+      sessionId, 
+      videoId,
+      name,
+      roomType,
+      scheduledAt,
+      isLobbyEnabled,
+      onlyHostSync,
+      breakEndTime
+    } = req.body;
 
     try {
       const stmt = db.prepare("SELECT * FROM rooms WHERE room_id = ?");
@@ -523,28 +714,65 @@ async function startServer() {
       if (!room) {
         // Recover room if the server restarted (ephemeral storage on Render)
         if (videoId && sessionId) {
-           const insertStmt = db.prepare("INSERT INTO rooms (room_id, video_id, current_timestamp, is_paused, host_session_id) VALUES (?, ?, ?, ?, ?)");
+           const insertStmt = db.prepare(`
+             INSERT INTO rooms (room_id, video_id, current_timestamp, is_paused, host_session_id, room_type, name, only_host_sync, is_lobby_enabled) 
+             VALUES (?, ?, ?, ?, ?, 'EPHEMERAL', 'Recovered Room', 0, 0)
+           `);
            insertStmt.run(roomId, videoId, currentTimestamp, isPaused ? 1 : 0, sessionId);
            return res.json({ success: true, recovered: true });
         }
         return res.status(404).json({ error: "Room not found" });
       }
 
-      // Only update if it's the host
-      if (room.host_session_id !== sessionId) {
-        return res.status(403).json({ error: "Unauthorized" });
+      // Check if trying to update host-only settings or regular state
+      const isRoomHost = room.host_session_id === sessionId;
+      
+      // If the permission is set to "only host can sync", block updates if not host
+      if (room.only_host_sync === 1 && !isRoomHost && (currentTimestamp !== undefined || isPaused !== undefined)) {
+        return res.status(403).json({ error: "Playback controls locked to Host only." });
       }
 
-      const updateStmt = db.prepare("UPDATE rooms SET current_timestamp = ?, is_paused = ? WHERE room_id = ?");
-      updateStmt.run(currentTimestamp, isPaused ? 1 : 0, roomId);
+      // Otherwise generic guests can sync unless only_host_sync is enabled
+      // If updating room settings, MUST be host
+      if ((isLobbyEnabled !== undefined || onlyHostSync !== undefined || breakEndTime !== undefined || roomType !== undefined || name !== undefined) && !isRoomHost) {
+        return res.status(403).json({ error: "Settings modification requires Host authority." });
+      }
+
+      // Build safe granular update statement
+      const updatedTimestamp = currentTimestamp !== undefined ? currentTimestamp : room.current_timestamp;
+      const updatedIsPaused = isPaused !== undefined ? (isPaused ? 1 : 0) : room.is_paused;
+      const updatedLobby = isLobbyEnabled !== undefined ? (isLobbyEnabled ? 1 : 0) : room.is_lobby_enabled;
+      const updatedHostSync = onlyHostSync !== undefined ? (onlyHostSync ? 1 : 0) : room.only_host_sync;
+      const updatedBreak = breakEndTime !== undefined ? breakEndTime : room.break_end_timestamp;
+      const updatedName = name !== undefined ? name : room.name;
+      const updatedRoomType = roomType !== undefined ? roomType : room.room_type;
+      const updatedScheduled = scheduledAt !== undefined ? scheduledAt : room.scheduled_at;
+
+      const updateStmt = db.prepare(`
+        UPDATE rooms 
+        SET current_timestamp = ?, is_paused = ?, is_lobby_enabled = ?, only_host_sync = ?, break_end_timestamp = ?, name = ?, room_type = ?, scheduled_at = ?
+        WHERE room_id = ?
+      `);
+      updateStmt.run(
+        updatedTimestamp, 
+        updatedIsPaused, 
+        updatedLobby, 
+        updatedHostSync, 
+        updatedBreak, 
+        updatedName, 
+        updatedRoomType, 
+        updatedScheduled,
+        roomId
+      );
 
       res.json({ success: true });
-    } catch (err) {
+    } catch (err: any) {
+      console.error("Update status fail:", err);
       res.status(500).json({ error: "Update failure" });
     }
   });
 
-  // Change Video (Host Only)
+  // Change Video (Host Only or if allowed)
   app.post("/api/room/:roomId/change-video", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
     const { videoUrl, sessionId } = req.body;
@@ -569,11 +797,11 @@ async function startServer() {
         return res.status(404).json({ error: "Room not found" });
       }
 
-      if (room.host_session_id !== sessionId) {
-        return res.status(403).json({ error: "Unauthorized" });
+      if (room.host_session_id !== sessionId && room.only_host_sync === 1) {
+        return res.status(403).json({ error: "Unauthorized. Playback controls restricted to host." });
       }
 
-      const updateStmt = db.prepare("UPDATE rooms SET video_id = ?, current_timestamp = 0, is_paused = 1 WHERE room_id = ?");
+      const updateStmt = db.prepare("UPDATE rooms SET video_id = ?, current_timestamp = 0, is_paused = 1, break_end_timestamp = NULL WHERE room_id = ?");
       updateStmt.run(videoId, roomId);
 
       res.json({ success: true, videoId });
@@ -582,10 +810,88 @@ async function startServer() {
     }
   });
 
-  // Send Message
+  // Continuous Playback Watchlist Histroy DB routes: Add recent room
+  app.post("/api/user/recent-rooms/add", (req, res) => {
+    const { username, roomId, videoId, lastTimestamp } = req.body;
+    if (!username || !roomId) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO user_recent_rooms (username, room_id, video_id, last_timestamp, last_visited)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(username, room_id) DO UPDATE SET
+          video_id = COALESCE(excluded.video_id, user_recent_rooms.video_id),
+          last_timestamp = COALESCE(excluded.last_timestamp, user_recent_rooms.last_timestamp),
+          last_visited = CURRENT_TIMESTAMP
+      `);
+      stmt.run(username, roomId, videoId || null, lastTimestamp || 0);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Get a user's recent watchlist rooms and saved rooms
+  app.get("/api/user/:username/rooms", (req, res) => {
+    const username = req.params.username;
+    try {
+      const stmt = db.prepare(`
+        SELECT urr.id, urr.username, urr.room_id, urr.last_timestamp, urr.last_visited,
+               r.video_id, r.room_type, r.name as room_name, r.scheduled_at, r.is_paused, r.only_host_sync
+        FROM user_recent_rooms urr
+        INNER JOIN rooms r ON urr.room_id = r.room_id
+        WHERE urr.username = ?
+        ORDER BY urr.last_visited DESC
+      `);
+      const list = stmt.all(username);
+      res.json(list);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Add Emoji Reaction to individual Chat bubbles (Toggles on-click!)
+  app.post("/api/message/:messageId/react", (req, res) => {
+    const messageId = parseInt(req.params.messageId);
+    const { username, emoji } = req.body;
+
+    if (!username || !emoji || isNaN(messageId)) {
+      return res.status(400).json({ error: "Missing required parameters" });
+    }
+
+    try {
+      // Toggle reaction check
+      const checkStmt = db.prepare("SELECT * FROM message_reactions WHERE message_id = ? AND username = ? AND emoji = ?");
+      const existing = checkStmt.get(messageId, username, emoji);
+
+      if (existing) {
+        const deleteStmt = db.prepare("DELETE FROM message_reactions WHERE message_id = ? AND username = ? AND emoji = ?");
+        deleteStmt.run(messageId, username, emoji);
+        res.json({ success: true, status: "removed" });
+      } else {
+        const insertStmt = db.prepare("INSERT INTO message_reactions (message_id, username, emoji) VALUES (?, ?, ?)");
+        insertStmt.run(messageId, username, emoji);
+        res.json({ success: true, status: "added" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Send Message (Checks mute status first!)
   app.post("/api/room/:roomId/messages", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { username, messageText, replyToId } = req.body;
+    const { username, sessionId, messageText, replyToId } = req.body;
+
+    // Check if user is muted in active roomPresence state
+    const presenceMap = roomPresence.get(roomId);
+    if (presenceMap && sessionId) {
+      const user = presenceMap.get(sessionId);
+      if (user && user.isMuted) {
+        return res.status(403).json({ error: "Your messages have been muting by the room host." });
+      }
+    }
 
     try {
       const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text, reply_to_id) VALUES (?, ?, ?, ?)");
@@ -597,14 +903,31 @@ async function startServer() {
     }
   });
 
-  // Get Messages
+  // Get Messages combined with nested emoji reactions list
   app.get("/api/room/:roomId/messages", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
     try {
-      const stmt = db.prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY timestamp ASC");
-      const messages = stmt.all(roomId);
+      const messages = db.prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY timestamp ASC").all(roomId);
+      
+      const reactions = db.prepare(`
+        SELECT mr.* FROM message_reactions mr
+        INNER JOIN messages m ON mr.message_id = m.id
+        WHERE m.room_id = ?
+      `).all(roomId);
+
+      // Collate message reactions matching their parents
+      messages.forEach((m: any) => {
+        m.reactions = reactions
+          .filter((mr: any) => mr.message_id === m.id)
+          .map((mr: any) => ({
+            username: mr.username,
+            emoji: mr.emoji
+          }));
+      });
+
       res.json(messages);
     } catch (err) {
+      console.error("Messages fetch fail:", err);
       res.status(500).json({ error: "Message retrieval failure" });
     }
   });
