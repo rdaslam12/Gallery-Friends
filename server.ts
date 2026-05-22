@@ -228,10 +228,10 @@ async function startServer() {
       existing.isBuffering = !!isBuffering;
     }
 
-    // Process expired heartbeats (users not seen in the last 120 seconds)
+    // Process expired heartbeats (users not seen in the last 30 seconds)
     const deadSessionIds: string[] = [];
     presenceMap.forEach((user, sessId) => {
-      if (now - user.lastSeen > 120000) {
+      if (now - user.lastSeen > 30000) {
         deadSessionIds.push(sessId);
       }
     });
@@ -240,6 +240,12 @@ async function startServer() {
       const deadUser = presenceMap!.get(sessId);
       if (deadUser) {
         presenceMap!.delete(sessId);
+        try {
+          const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
+          stmt.run(roomId, "System", `${deadUser.username} has left the room`);
+        } catch (err) {
+          console.error("Failed to insert system message for timeout leave:", err);
+        }
       }
     });
 
@@ -815,7 +821,7 @@ async function startServer() {
   // Queue Video / Play Next
   app.post("/api/room/:roomId/queue/add", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { videoUrl, sessionId, playNext } = req.body;
+    const { videoUrl, sessionId } = req.body;
 
     const videoId = parseVideoUrl(videoUrl);
     if (!videoId) {
@@ -834,13 +840,7 @@ async function startServer() {
       }
 
       const queue = JSON.parse(room.video_queue || "[]");
-      const item = { id: videoId, url: videoUrl, addedAt: Date.now() };
-      
-      if (playNext) {
-        queue.unshift(item);
-      } else {
-        queue.push(item);
-      }
+      queue.push({ id: videoId, url: videoUrl, addedAt: Date.now() });
 
       const updateStmt = db.prepare("UPDATE rooms SET video_queue = ? WHERE room_id = ?");
       updateStmt.run(JSON.stringify(queue), roomId);
@@ -850,8 +850,7 @@ async function startServer() {
         const msgStmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, 'System', ?)");
         const isDrive = videoId.startsWith("drive:");
         const nameType = isDrive ? "Google Drive Track" : "YouTube Video";
-        const prefix = playNext ? "Play Next Registered" : "Queued";
-        msgStmt.run(roomId, `${prefix}: ${nameType} (${videoUrl})`);
+        msgStmt.run(roomId, `Queued: ${nameType} (${videoUrl})`);
       } catch (err) {
         console.error("Failed to post system message for queue add:", err);
       }

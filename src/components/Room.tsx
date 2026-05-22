@@ -472,26 +472,6 @@ export default function Room() {
     };
   }, [isPlayerReady, isHost, roomId, sessionId, isDrive, roomStatus?.videoId, actualVideoId, username, isBufferingState]);
 
-  // Handle explicit leaving when unmounting or before tab close/unload
-  useEffect(() => {
-    const handleLeaveRoom = () => {
-      if (roomId && sessionId) {
-        fetch(`/api/room/${roomId}/leave`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId }),
-          keepalive: true
-        }).catch(() => {});
-      }
-    };
-
-    window.addEventListener("beforeunload", handleLeaveRoom);
-    return () => {
-      window.removeEventListener("beforeunload", handleLeaveRoom);
-      handleLeaveRoom();
-    };
-  }, [roomId, sessionId]);
-
   // Smooth local timeline ticking updates
   useEffect(() => {
     if (!isPlayerReady) return;
@@ -914,13 +894,13 @@ export default function Room() {
     } catch (error) {}
   };
 
-  const handleAddToQueue = async (playNext = false) => {
+  const handleAddToQueue = async () => {
     if (!nextVideoUrl || !isHost) return;
     try {
       const response = await fetch(`/api/room/${roomId}/queue/add`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoUrl: nextVideoUrl, sessionId, playNext }),
+        body: JSON.stringify({ videoUrl: nextVideoUrl, sessionId }),
       });
       if (response.ok) {
         const data = await response.json();
@@ -1030,7 +1010,7 @@ export default function Room() {
       
       {/* 1. Live View Mode: Roster Panel on Left (240px wide) */}
       {viewMode === "live" && (
-        <div className="w-full sm:w-60 bg-[#070707] border-b sm:border-b-0 sm:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5 order-1 sm:order-1">
+        <div className="w-full sm:w-60 bg-[#070707] border-b sm:border-b-0 sm:border-r border-white/5 flex flex-col shrink-0 overflow-y-auto p-4 space-y-5">
            <div className="flex items-center gap-2 mb-2 border-b border-white/5 pb-3">
              <Users className="w-4 h-4 text-[#9d4edd]" />
              <span className="text-[10px] font-mono tracking-widest text-white/70 uppercase">Roster Mesh</span>
@@ -1080,7 +1060,7 @@ export default function Room() {
       <div className={`${
         viewMode === "cinema" 
           ? "absolute inset-0 w-full h-full z-0 p-0 bg-black flex flex-col justify-center min-h-0 min-w-0" 
-          : "flex-1 relative flex flex-col justify-center bg-black min-h-0 min-w-0 p-2 md:p-4 order-2 sm:order-2"
+          : "flex-1 relative flex flex-col justify-center bg-black min-h-0 min-w-0 p-2 md:p-4"
       }`}>
         
         {/* Dynamic header row options with Presets layout */}
@@ -1416,10 +1396,10 @@ export default function Room() {
           <div 
             onMouseEnter={() => setIsChatHovered(true)}
             onMouseLeave={() => setIsChatHovered(false)}
-            className={`flex shrink-0 select-none text-left transition-all duration-500 ease-in-out ${
+            className={`flex shrink-0 h-[45vh] sm:h-full relative select-none text-left transition-all duration-500 ease-in-out ${
               viewMode === "cinema" 
                 ? "absolute right-0 left-auto top-0 bottom-0 h-full w-[380px] z-50" 
-                : "relative h-[45vh] sm:h-full z-[60] order-3 sm:order-3"
+                : "z-[60]"
             } ${
               viewMode === "cinema" 
                 ? (isOverlayActive ? "opacity-100 pointer-events-auto visible" : "opacity-0 pointer-events-none invisible") 
@@ -1763,33 +1743,22 @@ export default function Room() {
                           className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl outline-none focus:border-[#9d4edd]/50 text-xs text-white placeholder-white/30"
                         />
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="flex gap-2.5">
                         <button
                           type="button"
                           onClick={handleNextVideoSubmit}
                           disabled={!nextVideoUrl.trim()}
-                          className="py-1.5 bg-white/5 hover:bg-white/10 border border-white/5 disabled:opacity-40 text-white font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
-                          title="Play immediately"
+                          className="flex-1 py-1.5 bg-white/10 hover:bg-white/15 disabled:opacity-40 text-white font-semibold text-[10px] uppercase tracking-wider rounded-lg transition-all"
                         >
                           Load Now
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleAddToQueue(true)}
+                          onClick={handleAddToQueue}
                           disabled={!nextVideoUrl.trim()}
-                          className="py-1.5 bg-[#9d4edd]/20 hover:bg-[#9d4edd]/35 border border-[#9d4edd]/30 disabled:opacity-40 text-purple-200 font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
-                          title="Place at top of queue"
+                          className="flex-1 py-1.5 bg-[#9d4edd] hover:bg-[#8e3ecf] disabled:opacity-40 text-white font-semibold text-[10px] uppercase tracking-wider rounded-lg transition-all"
                         >
                           Play Next
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAddToQueue(false)}
-                          disabled={!nextVideoUrl.trim()}
-                          className="py-1.5 bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-40 text-white font-semibold text-[9px] uppercase tracking-wider rounded-lg transition-all"
-                          title="Add to end of queue"
-                        >
-                          Add Queue
                         </button>
                       </div>
                     </form>
