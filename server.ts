@@ -228,10 +228,10 @@ async function startServer() {
       existing.isBuffering = !!isBuffering;
     }
 
-    // Process expired heartbeats (users not seen in the last 30 seconds)
+    // Process expired heartbeats (users not seen in the last 120 seconds)
     const deadSessionIds: string[] = [];
     presenceMap.forEach((user, sessId) => {
-      if (now - user.lastSeen > 30000) {
+      if (now - user.lastSeen > 120000) {
         deadSessionIds.push(sessId);
       }
     });
@@ -240,12 +240,6 @@ async function startServer() {
       const deadUser = presenceMap!.get(sessId);
       if (deadUser) {
         presenceMap!.delete(sessId);
-        try {
-          const stmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, ?, ?)");
-          stmt.run(roomId, "System", `${deadUser.username} has left the room`);
-        } catch (err) {
-          console.error("Failed to insert system message for timeout leave:", err);
-        }
       }
     });
 
@@ -421,13 +415,25 @@ async function startServer() {
         const cookie = response.headers.get("set-cookie") || "";
         const text = await response.text();
         
-        const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
+        let confirmToken = "";
+        const formMatch = text.match(/name="confirm" value="([^"]+)"/);
+        if (formMatch) {
+            confirmToken = formMatch[1];
+        } else {
+            const urlMatch = text.match(/confirm=([a-zA-Z0-9_-]+)/);
+            if (urlMatch) {
+                confirmToken = urlMatch[1];
+            }
+        }
+
         const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
         
-        if (confirmMatch && uuidMatch) {
+        if (confirmToken) {
            const parsedUrl = new URL(response.url);
-           parsedUrl.searchParams.set("confirm", confirmMatch[1]);
-           parsedUrl.searchParams.set("uuid", uuidMatch[1]);
+           parsedUrl.searchParams.set("confirm", confirmToken);
+           if (uuidMatch) {
+               parsedUrl.searchParams.set("uuid", uuidMatch[1]);
+           }
            finalUrl = parsedUrl.toString();
         }
 
@@ -444,38 +450,56 @@ async function startServer() {
       }
       
       // Use https to fetch and pipe
-      const https = require("https");
-      https.get(cached.finalUrl, { headers }, (videoResponse: any) => {
-        if (videoResponse.statusCode === 206 || videoResponse.statusCode === 200) {
-          res.status(videoResponse.statusCode);
-          
-          Object.keys(videoResponse.headers).forEach((key) => {
-            const lowerKey = key.toLowerCase();
-            // Do NOT forward CORP headers to allow cross-origin embedding, 
-            // and do not forward keep-alive if our proxy manages it differently
-            if (lowerKey !== 'cross-origin-resource-policy' && 
-                lowerKey !== 'cross-origin-opener-policy' && 
-                lowerKey !== 'cross-origin-embedder-policy' &&
-                lowerKey !== 'connection' &&
-                lowerKey !== 'keep-alive') {
-              res.setHeader(key, videoResponse.headers[key]);
+      let redirectCount = 0;
+      const MAX_REDIRECTS = 5;
+
+      function fetchStream(urlStr: string, streamHeaders: any) {
+        https.get(urlStr, { headers: streamHeaders }, (videoResponse: any) => {
+          if (videoResponse.statusCode === 206 || videoResponse.statusCode === 200) {
+            res.status(videoResponse.statusCode);
+            
+            Object.keys(videoResponse.headers).forEach((key) => {
+              const lowerKey = key.toLowerCase();
+              // Do NOT forward CORP headers to allow cross-origin embedding, 
+              // and do not forward keep-alive if our proxy manages it differently
+              if (lowerKey !== 'cross-origin-resource-policy' && 
+                  lowerKey !== 'cross-origin-opener-policy' && 
+                  lowerKey !== 'cross-origin-embedder-policy' &&
+                  lowerKey !== 'connection' &&
+                  lowerKey !== 'keep-alive') {
+                res.setHeader(key, videoResponse.headers[key]);
+              }
+            });
+            
+            videoResponse.pipe(res);
+          } else if (videoResponse.statusCode >= 300 && videoResponse.statusCode < 400 && videoResponse.headers.location) {
+            if (redirectCount < MAX_REDIRECTS) {
+              redirectCount++;
+              let redirectUrl = videoResponse.headers.location;
+              if (!redirectUrl.startsWith("http")) {
+                 redirectUrl = new URL(redirectUrl, urlStr).toString();
+              }
+              // Avoid forwarding the specific cookie to cross-domain redirects if it causes issues, but for drive it might be fine.
+              fetchStream(redirectUrl, streamHeaders);
+            } else {
+              res.status(500).end("Too many redirects");
             }
-          });
-          
-          videoResponse.pipe(res);
-        } else {
-          // If 403 or other error, clear cache so next try fetches fresh token
-          if (videoResponse.statusCode >= 400 && videoResponse.statusCode < 500) {
-             driveCache.delete(fileId);
+          } else {
+            // If 403 or other error, clear cache so next try fetches fresh token
+            if (videoResponse.statusCode >= 400 && videoResponse.statusCode < 500) {
+               driveCache.delete(fileId);
+            }
+            res.status(videoResponse.statusCode).end();
           }
-          res.status(videoResponse.statusCode).end();
-        }
-      }).on("error", (err: any) => {
-        console.error("HTTPS stream error:", err);
-        if (!res.headersSent) {
-          res.status(500).end(`Error: ${err.message}`);
-        }
-      });
+        }).on("error", (err: any) => {
+          console.error("HTTPS stream error:", err);
+          if (!res.headersSent) {
+            res.status(500).end(`Error: ${err.message}`);
+          }
+        });
+      }
+
+      fetchStream(cached.finalUrl, headers);
       
     } catch (err: any) {
       console.error("Error proxying Google Drive URL:", err.stack || err);
@@ -495,16 +519,26 @@ async function startServer() {
       const text = await response.text();
       
       // Check for virus scan form
-      const confirmMatch = text.match(/name="confirm" value="([^"]+)"/);
+      let confirmToken = "";
+      const formMatch = text.match(/name="confirm" value="([^"]+)"/);
+      if (formMatch) {
+          confirmToken = formMatch[1];
+      } else {
+          const urlMatch = text.match(/confirm=([a-zA-Z0-9_-]+)/);
+          if (urlMatch) {
+              confirmToken = urlMatch[1];
+          }
+      }
+
       const uuidMatch = text.match(/name="uuid" value="([^"]+)"/);
       
-      if (confirmMatch && uuidMatch) {
-         const confirm = confirmMatch[1];
-         const uuid = uuidMatch[1];
+      if (confirmToken) {
          // We construct the final URL based on the response.url since fetch follows redirects
          const parsedUrl = new URL(response.url);
-         parsedUrl.searchParams.set("confirm", confirm);
-         parsedUrl.searchParams.set("uuid", uuid);
+         parsedUrl.searchParams.set("confirm", confirmToken);
+         if (uuidMatch) {
+             parsedUrl.searchParams.set("uuid", uuidMatch[1]);
+         }
          
          res.json({ url: parsedUrl.toString() });
       } else {
@@ -821,7 +855,7 @@ async function startServer() {
   // Queue Video / Play Next
   app.post("/api/room/:roomId/queue/add", async (req, res) => {
     const roomId = req.params.roomId.trim().toUpperCase();
-    const { videoUrl, sessionId } = req.body;
+    const { videoUrl, sessionId, playNext } = req.body;
 
     const videoId = parseVideoUrl(videoUrl);
     if (!videoId) {
@@ -840,7 +874,13 @@ async function startServer() {
       }
 
       const queue = JSON.parse(room.video_queue || "[]");
-      queue.push({ id: videoId, url: videoUrl, addedAt: Date.now() });
+      const item = { id: videoId, url: videoUrl, addedAt: Date.now() };
+      
+      if (playNext) {
+        queue.unshift(item);
+      } else {
+        queue.push(item);
+      }
 
       const updateStmt = db.prepare("UPDATE rooms SET video_queue = ? WHERE room_id = ?");
       updateStmt.run(JSON.stringify(queue), roomId);
@@ -850,7 +890,8 @@ async function startServer() {
         const msgStmt = db.prepare("INSERT INTO messages (room_id, username, message_text) VALUES (?, 'System', ?)");
         const isDrive = videoId.startsWith("drive:");
         const nameType = isDrive ? "Google Drive Track" : "YouTube Video";
-        msgStmt.run(roomId, `Queued: ${nameType} (${videoUrl})`);
+        const prefix = playNext ? "Play Next Registered" : "Queued";
+        msgStmt.run(roomId, `${prefix}: ${nameType} (${videoUrl})`);
       } catch (err) {
         console.error("Failed to post system message for queue add:", err);
       }

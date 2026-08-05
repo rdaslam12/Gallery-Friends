@@ -60,6 +60,8 @@ export default function Room() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [resolvedDriveUrl, setResolvedDriveUrl] = useState<string | null>(null);
+  const [useDriveIframe, setUseDriveIframe] = useState(false);
+  const [driveFallbackNotice, setDriveFallbackNotice] = useState<string | null>(null);
   const [activeReactions, setActiveReactions] = useState<{id: number, emoji: string, startX: number}[]>([]);
 
   // Advanced feature views & widths
@@ -572,6 +574,8 @@ export default function Room() {
       const fileId = roomStatus.videoId.replace("drive:", "");
       const expectedUrl = `/api/proxy-video/${fileId}`;
       setResolvedDriveUrl(expectedUrl);
+      setIsPlayerReady(true);
+      setLoadError(null);
       
       fetch(`/api/drive-subtitles-list/${fileId}`)
         .then(res => res.json())
@@ -1121,24 +1125,73 @@ export default function Room() {
         }`}>
           <div id="youtube-player" className={`w-full h-full pointer-events-auto ${isDrive ? "hidden" : ""}`} />
           
-          {isDrive && resolvedDriveUrl && (
-            <video
-              ref={html5VideoRef}
-              src={resolvedDriveUrl}
-              className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
-              autoPlay
-              onEnded={() => {
-                if (isHost) {
-                  setIsUserActive(true);
-                  if (roomStatusRef.current?.videoQueue && roomStatusRef.current.videoQueue.length > 0) {
-                    handlePlayNextVideoRef.current?.();
-                  }
-                }
-              }}
-              onError={() => setLoadError("Could not render Drive stream track context. Enforce public access limits.")}
-            >
-              {subtitleUrl && <track key={subtitleUrl} kind="subtitles" src={subtitleUrl} srcLang="en" label="Local Track" default />}
-            </video>
+          {isDrive && (
+            <>
+              {useDriveIframe ? (
+                <iframe
+                  src={`https://drive.google.com/file/d/${actualVideoId}/preview`}
+                  className="absolute inset-0 w-full h-full border-0 pointer-events-auto z-0"
+                  allow="autoplay; encrypted-media; fullscreen"
+                  onLoad={() => setIsPlayerReady(true)}
+                />
+              ) : (
+                resolvedDriveUrl && (
+                  <video
+                    ref={html5VideoRef}
+                    src={resolvedDriveUrl}
+                    className="absolute inset-0 w-full h-full object-contain pointer-events-auto z-0"
+                    autoPlay
+                    onLoadedData={() => setIsPlayerReady(true)}
+                    onEnded={() => {
+                      if (isHost) {
+                        setIsUserActive(true);
+                        if (roomStatusRef.current?.videoQueue && roomStatusRef.current.videoQueue.length > 0) {
+                          handlePlayNextVideoRef.current?.();
+                        }
+                      }
+                    }}
+                    onError={() => {
+                      console.warn("Drive proxy stream error. Switching to Embedded Google Drive Player...");
+                      setUseDriveIframe(true);
+                      setDriveFallbackNotice("Large Drive video detected (>100MB). Automatically using Embedded Google Drive Player.");
+                      setIsPlayerReady(true);
+                      setLoadError(null);
+                    }}
+                  >
+                    {subtitleUrl && <track key={subtitleUrl} kind="subtitles" src={subtitleUrl} srcLang="en" label="Local Track" default />}
+                  </video>
+                )
+              )}
+
+              {/* Drive Player Engine Switcher Overlay */}
+              <div className="absolute top-3 right-3 z-30 flex items-center gap-2 bg-black/80 backdrop-blur-md border border-white/10 rounded-xl px-2.5 py-1.5 shadow-lg select-none">
+                <span className="text-[10px] text-white/50 font-mono uppercase tracking-wider hidden sm:inline">Drive Engine:</span>
+                <button
+                  type="button"
+                  onClick={() => { setUseDriveIframe(false); setDriveFallbackNotice(null); }}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all ${!useDriveIframe ? "bg-purple-600 text-white" : "bg-white/10 text-white/50 hover:text-white"}`}
+                  title="Direct HTML5 Stream Proxy"
+                >
+                  Direct Stream
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUseDriveIframe(true)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all ${useDriveIframe ? "bg-purple-600 text-white" : "bg-white/10 text-white/50 hover:text-white"}`}
+                  title="Google Drive Official Embedded Player (Recommended for 900MB+ files)"
+                >
+                  Embedded Player
+                </button>
+              </div>
+
+              {/* Drive Fallback Notification Toast */}
+              {driveFallbackNotice && (
+                <div className="absolute top-3 left-3 z-30 bg-purple-900/90 border border-purple-400/30 text-purple-100 text-xs px-3.5 py-2 rounded-xl flex items-center gap-2.5 backdrop-blur-md shadow-xl max-w-sm animate-fade-in">
+                  <span className="text-xs font-medium leading-tight">{driveFallbackNotice}</span>
+                  <button onClick={() => setDriveFallbackNotice(null)} className="text-white/60 hover:text-white font-bold text-xs shrink-0 ml-1">✕</button>
+                </div>
+              )}
+            </>
           )}
 
           {/* Invisible Overlay blocking standard YT frame clicks, to maintain perfect synchronization */}
